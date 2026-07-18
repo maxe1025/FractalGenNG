@@ -10,7 +10,7 @@ pub struct PaletteEditorState {
 }
 
 pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for (name, ctor) in fractal_core::Palette::presets() {
             if ui.button(name).clicked() {
                 app.params.palette = ctor();
