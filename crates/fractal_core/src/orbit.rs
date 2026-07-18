@@ -32,6 +32,10 @@ pub fn compute_reference_orbit(
         FractalKind::Julia { seed } => {
             (center.clone(), HpComplex::from_f64_pair(seed[0], seed[1], precision_bits))
         }
+        other => unreachable!(
+            "compute_reference_orbit called for {other:?}, which doesn't support perturbation-\
+             theory deep zoom — callers must check FractalKind::supports_perturbation() first"
+        ),
     };
 
     for _ in 0..=max_iterations {
@@ -49,6 +53,15 @@ pub fn compute_reference_orbit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[should_panic(expected = "doesn't support perturbation-theory deep zoom")]
+    fn compute_reference_orbit_rejects_kinds_without_perturbation_support() {
+        let center = HpComplex::from_f64_pair(-0.5, 0.0, 64);
+        // Guards `FractalRenderer`'s deep-zoom pipeline selection: kinds
+        // without a reference-orbit formula must never reach here silently.
+        compute_reference_orbit(&center, &FractalKind::BurningShip, 500, 4.0);
+    }
 
     #[test]
     fn bounded_mandelbrot_center_runs_full_iteration_count() {

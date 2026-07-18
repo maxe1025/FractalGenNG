@@ -87,7 +87,7 @@ fn upgrade_precision_if_needed(app: &mut FractalApp) {
 #[cfg(debug_assertions)]
 fn handle_debug_deep_zoom_shortcut(ui: &egui::Ui, app: &mut FractalApp) {
     if ui.input(|i| i.key_pressed(egui::Key::Num9)) {
-        app.params.zoom = (app.params.zoom * 100.0).min(MAX_INTERACTIVE_ZOOM);
+        app.params.zoom = (app.params.zoom * 100.0).min(effective_max_zoom(app));
         app.params.center = app.params.center.with_precision(required_bits(app.params.zoom));
     }
     // "8": jump to a known deep-zoom-friendly coordinate (a "seahorse valley"
@@ -128,11 +128,22 @@ fn screen_to_world_f64(app: &FractalApp, rect: egui::Rect, pos: egui::Pos2) -> [
     [cx + ox, cy + oy]
 }
 
+/// The deepest zoom currently reachable: needs both a GPU that supports the
+/// perturbation shader and a fractal kind that pipeline knows how to render
+/// (see `FractalKind::supports_perturbation`) — otherwise clamped to where
+/// the standard f32 shader stays accurate.
+fn effective_max_zoom(app: &FractalApp) -> f64 {
+    if app.renderer.supports_deep_zoom() && app.params.kind.supports_perturbation() {
+        MAX_INTERACTIVE_ZOOM
+    } else {
+        ZOOM_F32_SAFE_CEILING
+    }
+}
+
 fn zoom_at(app: &mut FractalApp, rect: egui::Rect, pointer: egui::Pos2, scroll: f32) {
     let offset_before = pixel_offset(rect, pointer, app.params.zoom);
     let factor = (scroll as f64 * 0.003).exp();
-    let ceiling = if app.renderer.supports_deep_zoom() { MAX_INTERACTIVE_ZOOM } else { ZOOM_F32_SAFE_CEILING };
-    app.params.zoom = (app.params.zoom * factor).clamp(0.01, ceiling);
+    app.params.zoom = (app.params.zoom * factor).clamp(0.01, effective_max_zoom(app));
     let offset_after = pixel_offset(rect, pointer, app.params.zoom);
     // world_before - world_after = (center+offset_before) - (center+offset_after)
     //                            = offset_before - offset_after

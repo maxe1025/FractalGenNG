@@ -12,7 +12,8 @@ pub struct Uniforms {
     pub center_scale: [f32; 4],
     /// (julia_seed.x, julia_seed.y, bailout_sq, cycle_count)
     pub seed_bailout_cycle: [f32; 4],
-    /// (max_iterations, fractal_kind, stop_count, unused)
+    /// (max_iterations, fractal_kind, stop_count, multibrot_power — only
+    /// meaningful when fractal_kind == 4 (Multibrot), else 0)
     pub iter_kind_stops: [u32; 4],
     pub interior_color: [f32; 4],
 }
@@ -24,6 +25,10 @@ impl Uniforms {
         let (_, _, stop_count) = params.palette.to_gpu_stops();
         let interior = params.palette.interior_color;
         let (center_x, center_y) = params.center.to_f64_pair();
+        let power = match params.kind {
+            fractal_core::FractalKind::Multibrot { power } => power.round().max(2.0) as u32,
+            _ => 0,
+        };
         Self {
             center_scale: [center_x as f32, center_y as f32, half_extent, half_extent],
             seed_bailout_cycle: [
@@ -32,7 +37,7 @@ impl Uniforms {
                 (params.bailout_radius * params.bailout_radius) as f32,
                 params.palette.cycle_count.max(0.0001),
             ],
-            iter_kind_stops: [params.max_iterations, params.kind.shader_id(), stop_count, 0],
+            iter_kind_stops: [params.max_iterations, params.kind.shader_id(), stop_count, power],
             interior_color: [
                 interior[0] as f32 / 255.0,
                 interior[1] as f32 / 255.0,

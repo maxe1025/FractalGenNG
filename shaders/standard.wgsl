@@ -9,7 +9,9 @@
 struct Uniforms {
     center_scale: vec4<f32>,       // center.x, center.y, scale.x, scale.y
     seed_bailout_cycle: vec4<f32>, // julia_seed.x, julia_seed.y, bailout_sq, cycle_count
-    iter_kind_stops: vec4<u32>,    // max_iterations, fractal_kind (0=Mandelbrot,1=Julia), stop_count, unused
+    // max_iterations, fractal_kind (0=Mandelbrot,1=Julia,2=BurningShip,3=Tricorn,4=Multibrot),
+    // stop_count, multibrot_power (only meaningful when fractal_kind==4)
+    iter_kind_stops: vec4<u32>,
     interior_color: vec4<f32>,
 };
 
@@ -41,22 +43,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cx = center.x + px * scale.x * aspect;
     let cy = center.y - py * scale.y;
 
+    let power = f32(u.iter_kind_stops.w);
+
     var zx: f32;
     var zy: f32;
     var cxi: f32;
     var cyi: f32;
-    if (fractal_kind == 0u) {
-        // Mandelbrot: z_0 = 0, c = pixel coordinate.
-        zx = 0.0;
-        zy = 0.0;
-        cxi = cx;
-        cyi = cy;
-    } else {
+    if (fractal_kind == 1u) {
         // Julia: z_0 = pixel coordinate, c = fixed seed.
         zx = cx;
         zy = cy;
         cxi = julia_seed.x;
         cyi = julia_seed.y;
+    } else {
+        // Mandelbrot-family (Mandelbrot/Burning Ship/Tricorn/Multibrot):
+        // z_0 = 0, c = pixel coordinate.
+        zx = 0.0;
+        zy = 0.0;
+        cxi = cx;
+        cyi = cy;
     }
 
     var iter: u32 = 0u;
@@ -65,8 +70,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (iter >= max_iterations || mag_sq > bailout_sq) {
             break;
         }
-        let new_zx = zx * zx - zy * zy + cxi;
-        let new_zy = 2.0 * zx * zy + cyi;
+        var new_zx: f32;
+        var new_zy: f32;
+        if (fractal_kind == 2u) {
+            // Burning Ship: z_{n+1} = (|Re(z_n)| + i|Im(z_n)|)^2 + c.
+            let azx = abs(zx);
+            let azy = abs(zy);
+            new_zx = azx * azx - azy * azy + cxi;
+            new_zy = 2.0 * azx * azy + cyi;
+        } else if (fractal_kind == 3u) {
+            // Tricorn (Mandelbar): z_{n+1} = conj(z_n)^2 + c.
+            new_zx = zx * zx - zy * zy + cxi;
+            new_zy = -2.0 * zx * zy + cyi;
+        } else if (fractal_kind == 4u) {
+            // Multibrot: z_{n+1} = z_n^power + c, via polar form so any
+            // power works without a variable-length multiplication loop.
+            let r = sqrt(mag_sq);
+            let theta = atan2(zy, zx);
+            let r_pow = pow(r, power);
+            new_zx = r_pow * cos(power * theta) + cxi;
+            new_zy = r_pow * sin(power * theta) + cyi;
+        } else {
+            // Mandelbrot / Julia: z_{n+1} = z_n^2 + c.
+            new_zx = zx * zx - zy * zy + cxi;
+            new_zy = 2.0 * zx * zy + cyi;
+        }
         zx = new_zx;
         zy = new_zy;
         mag_sq = zx * zx + zy * zy;
@@ -78,8 +106,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         color = u.interior_color;
     } else {
         // Smooth (continuous) iteration count for band-free coloring.
+        // Escape magnitude grows like z^growth_power asymptotically — 2 for
+        // every quadratic-family kind (Mandelbrot/Julia/Burning Ship/
+        // Tricorn all square each step), or `power` itself for Multibrot.
+        let growth_power = select(2.0, power, fractal_kind == 4u);
         let log_zn = log(mag_sq) * 0.5;
-        let nu = log(log_zn / log(2.0)) / log(2.0);
+        let nu = log(log_zn / log(2.0)) / log(growth_power);
         let smooth_iter = f32(iter) + 1.0 - nu;
         let t = smooth_iter / cycle_count;
         color = sample_palette(t, u.iter_kind_stops.z);

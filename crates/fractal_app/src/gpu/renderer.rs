@@ -171,7 +171,10 @@ impl FractalRenderer {
     }
 
     pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, params: &FractalParams) {
-        if params.zoom >= ZOOM_PERTURBATION_THRESHOLD && self.render_perturbation(device, queue, params) {
+        if params.zoom >= ZOOM_PERTURBATION_THRESHOLD
+            && params.kind.supports_perturbation()
+            && self.render_perturbation(device, queue, params)
+        {
             return;
         }
         self.render_standard(device, queue, params);
@@ -283,6 +286,7 @@ impl FractalRenderer {
         height: u32,
     ) -> Vec<u8> {
         if params.zoom >= ZOOM_PERTURBATION_THRESHOLD
+            && params.kind.supports_perturbation()
             && let Some(rgba) = self.render_perturbation_to_rgba(device, queue, params, width, height)
         {
             return rgba;
