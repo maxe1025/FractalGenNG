@@ -3,6 +3,14 @@ name = "fractal_app"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "fractal_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fractal_app"
+path = "src/main.rs"
+
 [dependencies]
 bytemuck = { version = "1.25.1", features = ["derive"] }
 directories = "6.0.0"

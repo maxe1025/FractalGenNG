@@ -56,8 +56,9 @@ struct OrbitKey {
 /// Owns both compute pipelines (standard f32, deep-zoom perturbation) and the
 /// live viewport's output texture (registered with egui so it can be
 /// displayed via `ui.image`). Also used to render arbitrary off-screen
-/// resolutions for still-image export via `render_to_rgba` (always via the
-/// standard pipeline, for now — see module docs in `orbit.rs`).
+/// resolutions for still-image and animation-frame export via
+/// `render_to_rgba`, which picks the same pipeline `render` would for the
+/// frame's zoom level.
 pub struct FractalRenderer {
     width: u32,
     height: u32,
@@ -247,46 +248,134 @@ impl FractalRenderer {
     /// times, since one secondary reference may not resolve every pixel.
     fn correct_glitches(&self, device: &wgpu::Device, queue: &wgpu::Queue, params: &FractalParams, key: &OrbitKey) {
         let Some(perturbation) = &self.perturbation else { return };
-        let pixel_count = (self.width * self.height) as usize;
-
-        for _ in 0..MAX_GLITCH_CORRECTION_PASSES {
-            let flags = read_glitch_flags(device, queue, &perturbation.glitch_buffer, pixel_count);
-            let Some((cx, cy, count)) = glitched_centroid(&flags, self.width) else { break };
-            log::debug!("perturbation glitch correction: {count} glitched pixel(s), recentering on ({cx}, {cy})");
-
-            let (dx, dy) = pixel_offset(cx, cy, self.width, self.height, params.zoom);
-            let new_center = key.center.add_f64_delta(dx, dy);
-            let secondary_orbit =
-                orbit::compute_reference_orbit(&new_center, &key.kind, key.max_iterations, key.bailout_radius);
-            let secondary_len = secondary_orbit.len() as u32;
-
-            let secondary_orbit_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("secondary_ref_orbit_buffer"),
-                contents: cast_slice(secondary_orbit.as_slice()),
-                usage: wgpu::BufferUsages::STORAGE,
-            });
-            let correction_bind_group = create_perturbation_bind_group(
-                device,
-                &perturbation.bind_group_layout,
-                &perturbation.uniform_buffer,
-                &self.stop_pos_buffer,
-                &self.stop_color_buffer,
-                &self.output_view,
-                &secondary_orbit_buffer,
-                &perturbation.glitch_buffer,
-            );
-
-            let uniforms = PerturbationUniforms::from_params(params, secondary_len, true);
-            queue.write_buffer(&perturbation.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-            dispatch(device, queue, &perturbation.pipeline, &correction_bind_group, self.width, self.height);
-        }
+        run_glitch_correction(
+            device,
+            queue,
+            &perturbation.pipeline,
+            &perturbation.bind_group_layout,
+            &perturbation.uniform_buffer,
+            &self.stop_pos_buffer,
+            &self.stop_color_buffer,
+            &self.output_view,
+            &perturbation.glitch_buffer,
+            params,
+            &key.center,
+            &key.kind,
+            key.max_iterations,
+            key.bailout_radius,
+            self.width,
+            self.height,
+        );
     }
 
     /// Renders `params` at an arbitrary resolution (independent of the live
     /// viewport texture) and reads the result back as tightly-packed RGBA8, for
-    /// still-image export. Always uses the standard (f32) pipeline — deep-zoom
-    /// export is a later phase.
+    /// still-image and animation-frame export. Uses the perturbation pipeline
+    /// when `params.zoom` is deep enough and the GPU supports it (mirroring
+    /// `render`'s pipeline choice), falling back to the standard f32 pipeline
+    /// otherwise.
     pub fn render_to_rgba(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        params: &FractalParams,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        if params.zoom >= ZOOM_PERTURBATION_THRESHOLD
+            && let Some(rgba) = self.render_perturbation_to_rgba(device, queue, params, width, height)
+        {
+            return rgba;
+        }
+        self.render_standard_to_rgba(device, queue, params, width, height)
+    }
+
+    /// Returns `None` (having rendered nothing) if the perturbation pipeline
+    /// isn't available — the caller falls back to the standard pipeline.
+    fn render_perturbation_to_rgba(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        params: &FractalParams,
+        width: u32,
+        height: u32,
+    ) -> Option<Vec<u8>> {
+        let key = OrbitKey {
+            center: params.center.clone(),
+            kind: params.kind,
+            max_iterations: params.max_iterations,
+            bailout_radius: params.bailout_radius,
+        };
+        let needs_recompute = !matches!(&self.orbit_cache, Some((cached, _)) if *cached == key);
+        if needs_recompute {
+            let computed = orbit::compute_reference_orbit(&key.center, &key.kind, key.max_iterations, key.bailout_radius);
+            self.orbit_cache = Some((key.clone(), computed));
+        }
+        let (_, orbit_points) = self.orbit_cache.as_ref()?;
+        let orbit_len = orbit_points.len() as u32;
+        let perturbation = self.perturbation.as_ref()?;
+
+        let uniforms = PerturbationUniforms::from_params(params, orbit_len, false);
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("export_perturbation_uniform_buffer"),
+            contents: bytemuck::bytes_of(&uniforms),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let (positions, colors) = gpu_stop_arrays(params);
+        let stop_pos_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("export_perturbation_stop_pos_buffer"),
+            contents: cast_slice(&positions),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let stop_color_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("export_perturbation_stop_color_buffer"),
+            contents: cast_slice(&colors),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let orbit_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("export_ref_orbit_buffer"),
+            contents: cast_slice(orbit_points.as_slice()),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let glitch_buffer = create_glitch_buffer(device, width, height);
+
+        let (texture, view) = create_output_texture(device, width, height);
+        let bind_group = create_perturbation_bind_group(
+            device,
+            &perturbation.bind_group_layout,
+            &uniform_buffer,
+            &stop_pos_buffer,
+            &stop_color_buffer,
+            &view,
+            &orbit_buffer,
+            &glitch_buffer,
+        );
+
+        dispatch(device, queue, &perturbation.pipeline, &bind_group, width, height);
+
+        run_glitch_correction(
+            device,
+            queue,
+            &perturbation.pipeline,
+            &perturbation.bind_group_layout,
+            &uniform_buffer,
+            &stop_pos_buffer,
+            &stop_color_buffer,
+            &view,
+            &glitch_buffer,
+            params,
+            &key.center,
+            &key.kind,
+            key.max_iterations,
+            key.bailout_radius,
+            width,
+            height,
+        );
+
+        Some(read_texture_to_rgba(device, queue, &texture, width, height))
+    }
+
+    fn render_standard_to_rgba(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -335,6 +424,67 @@ fn pixel_offset(px_x: u32, px_y: u32, width: u32, height: u32, zoom: f64) -> (f6
     let half_extent = 2.0 / zoom;
     let aspect = f64::from(width) / f64::from(height);
     (px * half_extent * aspect, -py * half_extent)
+}
+
+/// Shared secondary-reference-orbit glitch-correction loop, used both by the
+/// live viewport (`FractalRenderer::correct_glitches`, against the shared
+/// interactive buffers) and by off-screen export
+/// (`FractalRenderer::render_perturbation_to_rgba`, against export-scoped
+/// buffers sized to the export resolution). Reads back `glitch_buffer`,
+/// recenters a new reference orbit on the flagged pixels' centroid, and
+/// re-dispatches a correction pass — up to [`MAX_GLITCH_CORRECTION_PASSES`]
+/// times, since one secondary reference may not resolve every pixel.
+#[allow(clippy::too_many_arguments)]
+fn run_glitch_correction(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pipeline: &wgpu::ComputePipeline,
+    layout: &wgpu::BindGroupLayout,
+    uniform_buffer: &wgpu::Buffer,
+    stop_pos_buffer: &wgpu::Buffer,
+    stop_color_buffer: &wgpu::Buffer,
+    view: &wgpu::TextureView,
+    glitch_buffer: &wgpu::Buffer,
+    params: &FractalParams,
+    center: &HpComplex,
+    kind: &FractalKind,
+    max_iterations: u32,
+    bailout_radius: f64,
+    width: u32,
+    height: u32,
+) {
+    let pixel_count = (width * height) as usize;
+
+    for _ in 0..MAX_GLITCH_CORRECTION_PASSES {
+        let flags = read_glitch_flags(device, queue, glitch_buffer, pixel_count);
+        let Some((cx, cy, count)) = glitched_centroid(&flags, width) else { break };
+        log::debug!("perturbation glitch correction: {count} glitched pixel(s), recentering on ({cx}, {cy})");
+
+        let (dx, dy) = pixel_offset(cx, cy, width, height, params.zoom);
+        let new_center = center.add_f64_delta(dx, dy);
+        let secondary_orbit = orbit::compute_reference_orbit(&new_center, kind, max_iterations, bailout_radius);
+        let secondary_len = secondary_orbit.len() as u32;
+
+        let secondary_orbit_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("secondary_ref_orbit_buffer"),
+            contents: cast_slice(secondary_orbit.as_slice()),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let correction_bind_group = create_perturbation_bind_group(
+            device,
+            layout,
+            uniform_buffer,
+            stop_pos_buffer,
+            stop_color_buffer,
+            view,
+            &secondary_orbit_buffer,
+            glitch_buffer,
+        );
+
+        let uniforms = PerturbationUniforms::from_params(params, secondary_len, true);
+        queue.write_buffer(uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        dispatch(device, queue, pipeline, &correction_bind_group, width, height);
+    }
 }
 
 /// Centroid (in pixel coordinates) of all flagged pixels, plus the count.

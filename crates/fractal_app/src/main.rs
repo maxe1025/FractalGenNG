@@ -1,10 +1,6 @@
-mod app;
-mod gpu;
-mod presets;
-mod ui;
-mod view_state;
-
 use std::sync::Arc;
+
+use fractal_app::app;
 
 fn main() -> eframe::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();

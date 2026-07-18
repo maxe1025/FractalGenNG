@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::hp::required_bits;
 use crate::params::FractalParams;
 
 /// How magnification progresses across an animation's frames.
@@ -28,9 +29,7 @@ pub fn generate_zoom_frames(
         return Vec::new();
     }
     if frame_count == 1 {
-        let mut params = base.clone();
-        params.zoom = start_zoom;
-        return vec![params];
+        return vec![frame_with_zoom(base, start_zoom)];
     }
 
     (0..frame_count)
@@ -40,11 +39,25 @@ pub fn generate_zoom_frames(
                 ZoomCurve::Linear => start_zoom + (end_zoom - start_zoom) * t,
                 ZoomCurve::Exponential => start_zoom * (end_zoom / start_zoom).powf(t),
             };
-            let mut params = base.clone();
-            params.zoom = zoom;
-            params
+            frame_with_zoom(base, zoom)
         })
         .collect()
+}
+
+/// Clones `base` with `zoom` set, upgrading `center`'s precision if this
+/// frame's zoom is deeper than what `base` was carrying (frames are typically
+/// generated from a `base` authored at the *start* of the animation, whose
+/// precision was only ever tuned for that starting zoom — deeper frames need
+/// more mantissa bits or their reference orbit is computed with mistakenly
+/// low precision). Never downgrades: `base`'s existing precision is a floor.
+fn frame_with_zoom(base: &FractalParams, zoom: f64) -> FractalParams {
+    let mut params = base.clone();
+    params.zoom = zoom;
+    let needed = required_bits(zoom);
+    if needed > params.center.precision_bits() {
+        params.center = params.center.with_precision(needed);
+    }
+    params
 }
 
 #[cfg(test)]
@@ -102,5 +115,37 @@ mod tests {
             assert_eq!(frame.center, base.center);
             assert_eq!(frame.kind.shader_id(), base.kind.shader_id());
         }
+    }
+
+    #[test]
+    fn deep_end_zoom_upgrades_center_precision_beyond_base() {
+        // `base` is authored at a shallow zoom (low precision); an animation
+        // zooming out to 1e100 needs far more mantissa bits than that to
+        // resolve its reference orbit correctly at the deepest frames.
+        let base = FractalParams {
+            center: crate::hp::HpComplex::from_f64_pair(-0.75, 0.0, crate::hp::MIN_PRECISION_BITS),
+            ..FractalParams::default()
+        };
+        let frames = generate_zoom_frames(&base, 1.0, 1.0e100, 5, ZoomCurve::Exponential);
+
+        assert_eq!(frames[0].center.precision_bits(), crate::hp::MIN_PRECISION_BITS);
+        let last = frames.last().unwrap();
+        assert!(last.center.precision_bits() >= required_bits(last.zoom));
+        assert!(last.center.precision_bits() > base.center.precision_bits());
+        // Precision only ever grows across the frame sequence, never shrinks.
+        for pair in frames.windows(2) {
+            assert!(pair[1].center.precision_bits() >= pair[0].center.precision_bits());
+        }
+    }
+
+    #[test]
+    fn single_frame_animation_also_gets_precision_upgrade() {
+        let base = FractalParams {
+            center: crate::hp::HpComplex::from_f64_pair(-0.75, 0.0, crate::hp::MIN_PRECISION_BITS),
+            ..FractalParams::default()
+        };
+        let frames = generate_zoom_frames(&base, 1.0e50, 1.0e50, 1, ZoomCurve::Linear);
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].center.precision_bits() >= required_bits(1.0e50));
     }
 }

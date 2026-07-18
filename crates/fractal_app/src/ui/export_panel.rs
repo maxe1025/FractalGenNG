@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use eframe::egui;
 use fractal_core::export::animation::{self, ZoomCurve};
+use fractal_core::hp::MAX_INTERACTIVE_ZOOM;
 use fractal_core::FractalParams;
 
 use crate::app::FractalApp;
@@ -107,14 +108,14 @@ fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
     if app.export.anim_job.is_none() {
         ui.horizontal(|ui| {
             ui.label("Start zoom:");
-            ui.add(egui::DragValue::new(&mut app.export.anim_start_zoom).range(0.01..=1.0e13).speed(1.0));
+            ui.add(egui::DragValue::new(&mut app.export.anim_start_zoom).range(0.01..=MAX_INTERACTIVE_ZOOM).speed(1.0));
             if ui.small_button("Use current").clicked() {
                 app.export.anim_start_zoom = app.params.zoom;
             }
         });
         ui.horizontal(|ui| {
             ui.label("End zoom:");
-            ui.add(egui::DragValue::new(&mut app.export.anim_end_zoom).range(0.01..=1.0e13).speed(1.0));
+            ui.add(egui::DragValue::new(&mut app.export.anim_end_zoom).range(0.01..=MAX_INTERACTIVE_ZOOM).speed(1.0));
             if ui.small_button("Use current").clicked() {
                 app.export.anim_end_zoom = app.params.zoom;
             }
