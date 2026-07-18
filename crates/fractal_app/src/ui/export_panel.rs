@@ -15,6 +15,17 @@ pub struct AnimationJob {
     pub width: u32,
     pub height: u32,
     pub supersample: u32,
+    /// Snapshot of `ExportState::anim_fps` at render-start time, so a fps
+    /// edit mid-render doesn't retroactively change what a completed job's
+    /// "Stitch to video" step uses.
+    pub fps: u32,
+}
+
+/// An animation export that finished, kept around so the "Stitch to video"
+/// controls know which frame directory/frame-rate to hand ffmpeg.
+pub struct CompletedAnimation {
+    pub output_dir: PathBuf,
+    pub fps: u32,
 }
 
 pub struct ExportState {
@@ -25,8 +36,15 @@ pub struct ExportState {
     pub anim_start_zoom: f64,
     pub anim_end_zoom: f64,
     pub anim_frame_count: u32,
+    pub anim_fps: u32,
     pub anim_curve: ZoomCurve,
+    /// `exponent` for `ZoomCurve::Accelerating`, kept as its own field (not
+    /// just read out of `anim_curve`) so the value survives switching to
+    /// Linear/Exponential and back without resetting to the default.
+    pub anim_accel_exponent: f64,
     pub anim_job: Option<AnimationJob>,
+    pub last_animation: Option<CompletedAnimation>,
+    pub ffmpeg_status: Option<String>,
 }
 
 impl Default for ExportState {
@@ -39,8 +57,12 @@ impl Default for ExportState {
             anim_start_zoom: 1.0,
             anim_end_zoom: 1000.0,
             anim_frame_count: 120,
+            anim_fps: 30,
             anim_curve: ZoomCurve::Exponential,
+            anim_accel_exponent: 2.0,
             anim_job: None,
+            last_animation: None,
+            ffmpeg_status: None,
         }
     }
 }
@@ -124,16 +146,48 @@ fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
         ui.horizontal(|ui| {
             ui.label("Frame count:");
             ui.add(egui::DragValue::new(&mut app.export.anim_frame_count).range(2..=10_000));
+            ui.label("FPS:");
+            ui.add(egui::DragValue::new(&mut app.export.anim_fps).range(1..=240));
         });
-        egui::ComboBox::from_id_salt("zoom_curve")
-            .selected_text(match app.export.anim_curve {
-                ZoomCurve::Linear => "Linear",
-                ZoomCurve::Exponential => "Exponential",
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut app.export.anim_curve, ZoomCurve::Linear, "Linear");
-                ui.selectable_value(&mut app.export.anim_curve, ZoomCurve::Exponential, "Exponential (recommended)");
+        ui.label(
+            egui::RichText::new(format!(
+                "~{:.1}s video at {} fps",
+                f64::from(app.export.anim_frame_count) / f64::from(app.export.anim_fps),
+                app.export.anim_fps
+            ))
+            .color(theme::TEXT_WEAK)
+            .small(),
+        );
+
+        let curve_name = match app.export.anim_curve {
+            ZoomCurve::Linear => "Linear",
+            ZoomCurve::Exponential => "Exponential",
+            ZoomCurve::Accelerating { .. } => "Accelerating",
+        };
+        egui::ComboBox::from_id_salt("zoom_curve").selected_text(curve_name).show_ui(ui, |ui| {
+            ui.selectable_value(&mut app.export.anim_curve, ZoomCurve::Linear, "Linear");
+            ui.selectable_value(&mut app.export.anim_curve, ZoomCurve::Exponential, "Exponential");
+            if ui
+                .selectable_label(matches!(app.export.anim_curve, ZoomCurve::Accelerating { .. }), "Accelerating (recommended)")
+                .clicked()
+            {
+                app.export.anim_curve = ZoomCurve::Accelerating { exponent: app.export.anim_accel_exponent };
+            }
+        });
+        if let ZoomCurve::Accelerating { mut exponent } = app.export.anim_curve {
+            ui.horizontal(|ui| {
+                ui.label("Acceleration:");
+                if ui.add(egui::DragValue::new(&mut exponent).range(0.2..=5.0).speed(0.05)).changed() {
+                    app.export.anim_accel_exponent = exponent;
+                    app.export.anim_curve = ZoomCurve::Accelerating { exponent };
+                }
             });
+            ui.label(
+                egui::RichText::new("> 1 starts slow and speeds up; < 1 starts fast and eases in.")
+                    .color(theme::TEXT_WEAK)
+                    .small(),
+            );
+        }
 
         if ui.button("Render Animation...").clicked()
             && let Some(dir) = rfd::FileDialog::new().pick_folder()
@@ -152,7 +206,10 @@ fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
                 width: app.export.width,
                 height: app.export.height,
                 supersample: app.export.supersample,
+                fps: app.export.anim_fps,
             });
+            app.export.last_animation = None;
+            app.export.ffmpeg_status = None;
         }
     } else if let Some(job) = &app.export.anim_job {
         let total = job.frames.len().max(1);
@@ -161,6 +218,53 @@ fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
         if ui.button("Cancel").clicked() {
             app.export.anim_job = None;
         }
+    }
+
+    if let Some(status) = &app.export.status {
+        ui.label(status);
+    }
+
+    if app.export.anim_job.is_none() {
+        show_ffmpeg_stitch_controls(ui, app);
+    }
+}
+
+fn show_ffmpeg_stitch_controls(ui: &mut egui::Ui, app: &mut FractalApp) {
+    let Some(completed) = &app.export.last_animation else { return };
+    let output_dir = completed.output_dir.clone();
+    let fps = completed.fps;
+
+    ui.add_space(4.0);
+    ui.separator();
+    ui.label(egui::RichText::new("Stitch frames to video").strong());
+
+    if ui.button("Stitch to video (ffmpeg)...").clicked()
+        && let Some(out_path) =
+            rfd::FileDialog::new().set_file_name("animation.mp4").add_filter("MP4 video", &["mp4"]).save_file()
+    {
+        app.export.ffmpeg_status = Some(if crate::ffmpeg::is_available() {
+            match crate::ffmpeg::spawn_stitch(&output_dir, fps, &out_path) {
+                Ok(()) => format!("ffmpeg started in the background — check {} shortly.", out_path.display()),
+                Err(e) => format!("Failed to start ffmpeg: {e}"),
+            }
+        } else {
+            "ffmpeg not found on PATH. Copy the command below and run it yourself once ffmpeg is installed."
+                .to_string()
+        });
+    }
+
+    let default_out = output_dir.join("animation.mp4");
+    let cmd = crate::ffmpeg::command_string(&output_dir, fps, &default_out);
+    ui.horizontal(|ui| {
+        if ui.small_button("Copy command").clicked() {
+            ui.copy_text(cmd.clone());
+        }
+        ui.label(egui::RichText::new("(edit the output path before running)").color(theme::TEXT_WEAK).small());
+    });
+    ui.label(egui::RichText::new(&cmd).monospace().small().color(theme::TEXT_WEAK));
+
+    if let Some(status) = &app.export.ffmpeg_status {
+        ui.label(status);
     }
 }
 
@@ -176,6 +280,7 @@ fn run_animation_step(ui: &mut egui::Ui, app: &mut FractalApp) {
         width: u32,
         height: u32,
         supersample: u32,
+        fps: u32,
     }
 
     let step = app.export.anim_job.as_ref().and_then(|job| {
@@ -187,6 +292,7 @@ fn run_animation_step(ui: &mut egui::Ui, app: &mut FractalApp) {
             width: job.width,
             height: job.height,
             supersample: job.supersample,
+            fps: job.fps,
         })
     });
 
@@ -214,6 +320,7 @@ fn run_animation_step(ui: &mut egui::Ui, app: &mut FractalApp) {
 
     if step.index + 1 >= step.total {
         app.export.status = Some(format!("Animation saved to {}", step.output_dir.display()));
+        app.export.last_animation = Some(CompletedAnimation { output_dir: step.output_dir, fps: step.fps });
         app.export.anim_job = None;
     } else {
         if let Some(job) = app.export.anim_job.as_mut() {

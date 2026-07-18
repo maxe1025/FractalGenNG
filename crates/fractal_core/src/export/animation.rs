@@ -4,7 +4,7 @@ use crate::hp::required_bits;
 use crate::params::FractalParams;
 
 /// How magnification progresses across an animation's frames.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum ZoomCurve {
     /// `zoom` increases by a constant amount each frame. Looks like it starts
     /// fast and drags at the end, since perceived zoom speed is multiplicative.
@@ -12,6 +12,16 @@ pub enum ZoomCurve {
     /// `zoom` increases by a constant *factor* each frame (geometric
     /// interpolation). Constant perceived zoom speed — the natural default.
     Exponential,
+    /// Like `Exponential`, but the zoom *ratio* itself grows over the
+    /// animation's duration instead of staying constant, by raising
+    /// normalized time to `exponent` before applying the exponential
+    /// formula. `exponent > 1.0` starts slow and builds speed toward the
+    /// end (fixes the "zoom feels like it stalls" complaint deep zooms get
+    /// even under plain `Exponential`, since self-similar fractal detail can
+    /// make a mathematically-constant zoom rate read as visually static);
+    /// `exponent < 1.0` does the opposite, starting fast and easing into the
+    /// destination. `exponent == 1.0` is identical to `Exponential`.
+    Accelerating { exponent: f64 },
 }
 
 /// Generates one [`FractalParams`] per frame, interpolating `zoom` from
@@ -38,6 +48,9 @@ pub fn generate_zoom_frames(
             let zoom = match curve {
                 ZoomCurve::Linear => start_zoom + (end_zoom - start_zoom) * t,
                 ZoomCurve::Exponential => start_zoom * (end_zoom / start_zoom).powf(t),
+                ZoomCurve::Accelerating { exponent } => {
+                    start_zoom * (end_zoom / start_zoom).powf(t.powf(exponent))
+                }
             };
             frame_with_zoom(base, zoom)
         })
@@ -104,6 +117,46 @@ mod tests {
             let r = pair[1].zoom / pair[0].zoom;
             assert!((r - ratio).abs() < 1e-6, "ratio should be constant across frames");
         }
+    }
+
+    #[test]
+    fn accelerating_curve_hits_endpoints_and_is_monotonic() {
+        let base = FractalParams::default();
+        let curve = ZoomCurve::Accelerating { exponent: 2.5 };
+        let frames = generate_zoom_frames(&base, 1.0, 1_000_000.0, 7, curve);
+        assert!((frames[0].zoom - 1.0).abs() < 1e-6);
+        assert!((frames.last().unwrap().zoom - 1_000_000.0).abs() < 1.0);
+        for pair in frames.windows(2) {
+            assert!(pair[1].zoom > pair[0].zoom, "zoom must strictly increase frame over frame");
+        }
+    }
+
+    #[test]
+    fn accelerating_exponent_one_matches_plain_exponential() {
+        let base = FractalParams::default();
+        let exponential = generate_zoom_frames(&base, 1.0, 1_000_000.0, 7, ZoomCurve::Exponential);
+        let accelerating =
+            generate_zoom_frames(&base, 1.0, 1_000_000.0, 7, ZoomCurve::Accelerating { exponent: 1.0 });
+        for (a, b) in exponential.iter().zip(accelerating.iter()) {
+            assert!((a.zoom - b.zoom).abs() < 1e-6, "exponent=1.0 should match plain Exponential exactly");
+        }
+    }
+
+    #[test]
+    fn accelerating_exponent_above_one_starts_slower_than_plain_exponential() {
+        // exponent > 1.0 is meant to start slow and build speed toward the
+        // end — so its ratio between the first two frames should be smaller
+        // than plain Exponential's constant ratio.
+        let base = FractalParams::default();
+        let exponential = generate_zoom_frames(&base, 1.0, 1_000_000.0, 10, ZoomCurve::Exponential);
+        let accelerating =
+            generate_zoom_frames(&base, 1.0, 1_000_000.0, 10, ZoomCurve::Accelerating { exponent: 3.0 });
+        let exp_first_ratio = exponential[1].zoom / exponential[0].zoom;
+        let acc_first_ratio = accelerating[1].zoom / accelerating[0].zoom;
+        assert!(
+            acc_first_ratio < exp_first_ratio,
+            "accelerating (exponent>1) should start slower: {acc_first_ratio} vs {exp_first_ratio}"
+        );
     }
 
     #[test]
