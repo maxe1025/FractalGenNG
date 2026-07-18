@@ -53,19 +53,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
         app.params.kind = FractalKind::Julia { seed: world };
         app.view.julia_seed_picker_active = false;
     }
+}
 
+/// Camera/capability readout shown in the bottom status bar (moved out of a
+/// viewport overlay so the render stays clean and edge-to-edge, Blender-
+/// viewport style).
+pub fn status_text(app: &FractalApp) -> String {
     let (center_x, center_y) = app.params.center.to_f64_pair();
     let mut status = format!("zoom: {:.3e}   center: {center_x:.6}, {center_y:.6}", app.params.zoom);
     if !app.renderer.supports_deep_zoom() {
         status.push_str("   [deep zoom unavailable: GPU lacks 64-bit shader float support]");
     }
-    ui.painter().text(
-        rect.left_top() + egui::vec2(6.0, 4.0),
-        egui::Align2::LEFT_TOP,
-        status,
-        egui::FontId::monospace(12.0),
-        egui::Color32::from_white_alpha(220),
-    );
+    status
 }
 
 /// Bumps `center`'s precision up when the zoom has deepened past what its

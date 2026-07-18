@@ -2,6 +2,7 @@ use eframe::egui;
 use fractal_core::GradientStop;
 
 use crate::app::FractalApp;
+use crate::ui::theme;
 
 #[derive(Default)]
 pub struct PaletteEditorState {
@@ -9,8 +10,6 @@ pub struct PaletteEditorState {
 }
 
 pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
-    ui.heading("Palette");
-
     ui.horizontal(|ui| {
         for (name, ctor) in fractal_core::Palette::presets() {
             if ui.button(name).clicked() {
@@ -19,7 +18,30 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
             }
         }
     });
+    ui.add_space(6.0);
 
+    theme::section(ui, "Gradient", |ui| {
+        gradient_editor(ui, app);
+    });
+
+    theme::section(ui, "Coloring", |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Cycle count:");
+            ui.add(egui::DragValue::new(&mut app.params.palette.cycle_count).range(0.1..=50.0).speed(0.1));
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Interior color:");
+            let interior = app.params.palette.interior_color;
+            let mut color = egui::Color32::from_rgba_unmultiplied(interior[0], interior[1], interior[2], interior[3]);
+            if egui::color_picker::color_edit_button_srgba(ui, &mut color, egui::color_picker::Alpha::Opaque).changed() {
+                app.params.palette.interior_color = color.to_array();
+            }
+        });
+    });
+}
+
+fn gradient_editor(ui: &mut egui::Ui, app: &mut FractalApp) {
     let bar_height = 28.0;
     let desired_size = egui::vec2(ui.available_width(), bar_height);
     let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
@@ -101,18 +123,4 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
             }
         });
     }
-
-    ui.horizontal(|ui| {
-        ui.label("Cycle count:");
-        ui.add(egui::DragValue::new(&mut app.params.palette.cycle_count).range(0.1..=50.0).speed(0.1));
-    });
-
-    ui.horizontal(|ui| {
-        ui.label("Interior color:");
-        let interior = app.params.palette.interior_color;
-        let mut color = egui::Color32::from_rgba_unmultiplied(interior[0], interior[1], interior[2], interior[3]);
-        if egui::color_picker::color_edit_button_srgba(ui, &mut color, egui::color_picker::Alpha::Opaque).changed() {
-            app.params.palette.interior_color = color.to_array();
-        }
-    });
 }

@@ -6,6 +6,7 @@ use fractal_core::hp::MAX_INTERACTIVE_ZOOM;
 use fractal_core::FractalParams;
 
 use crate::app::FractalApp;
+use crate::ui::theme;
 
 pub struct AnimationJob {
     pub frames: Vec<FractalParams>,
@@ -45,64 +46,64 @@ impl Default for ExportState {
 }
 
 pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
-    ui.heading("Export image");
-    ui.horizontal(|ui| {
-        ui.label("Width:");
-        ui.add(egui::DragValue::new(&mut app.export.width).range(1..=16384));
-        ui.label("Height:");
-        ui.add(egui::DragValue::new(&mut app.export.height).range(1..=16384));
-    });
-    ui.horizontal(|ui| {
-        ui.label("Supersampling:");
-        egui::ComboBox::from_id_salt("supersample")
-            .selected_text(format!("{}x", app.export.supersample))
-            .show_ui(ui, |ui| {
-                for factor in [1u32, 2, 4] {
-                    ui.selectable_value(&mut app.export.supersample, factor, format!("{factor}x"));
-                }
-            });
-    });
-
-    if ui.button("Render & Save PNG...").clicked()
-        && let Some(path) = rfd::FileDialog::new()
-            .set_file_name("fractal.png")
-            .add_filter("PNG image", &["png"])
-            .save_file()
-    {
-        let render_w = app.export.width * app.export.supersample;
-        let render_h = app.export.height * app.export.supersample;
-        let rgba = app.renderer.render_to_rgba(
-            &app.render_state.device,
-            &app.render_state.queue,
-            &app.params,
-            render_w,
-            render_h,
-        );
-        let result = fractal_core::export::image_export::save_png_supersampled(
-            render_w,
-            render_h,
-            &rgba,
-            app.export.width,
-            app.export.height,
-            &path,
-        );
-        app.export.status = Some(match result {
-            Ok(()) => format!("Saved {}", path.display()),
-            Err(e) => format!("Export failed: {e}"),
+    theme::section(ui, "Export Image", |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Width:");
+            ui.add(egui::DragValue::new(&mut app.export.width).range(1..=16384));
+            ui.label("Height:");
+            ui.add(egui::DragValue::new(&mut app.export.height).range(1..=16384));
         });
-    }
+        ui.horizontal(|ui| {
+            ui.label("Supersampling:");
+            egui::ComboBox::from_id_salt("supersample")
+                .selected_text(format!("{}x", app.export.supersample))
+                .show_ui(ui, |ui| {
+                    for factor in [1u32, 2, 4] {
+                        ui.selectable_value(&mut app.export.supersample, factor, format!("{factor}x"));
+                    }
+                });
+        });
 
-    if let Some(status) = &app.export.status {
-        ui.label(status);
-    }
+        if ui.button("Render & Save PNG...").clicked()
+            && let Some(path) = rfd::FileDialog::new()
+                .set_file_name("fractal.png")
+                .add_filter("PNG image", &["png"])
+                .save_file()
+        {
+            let render_w = app.export.width * app.export.supersample;
+            let render_h = app.export.height * app.export.supersample;
+            let rgba = app.renderer.render_to_rgba(
+                &app.render_state.device,
+                &app.render_state.queue,
+                &app.params,
+                render_w,
+                render_h,
+            );
+            let result = fractal_core::export::image_export::save_png_supersampled(
+                render_w,
+                render_h,
+                &rgba,
+                app.export.width,
+                app.export.height,
+                &path,
+            );
+            app.export.status = Some(match result {
+                Ok(()) => format!("Saved {}", path.display()),
+                Err(e) => format!("Export failed: {e}"),
+            });
+        }
 
-    ui.separator();
-    show_animation_section(ui, app);
+        if let Some(status) = &app.export.status {
+            ui.label(status);
+        }
+    });
+
+    theme::section(ui, "Export Animation", |ui| {
+        show_animation_section(ui, app);
+    });
 }
 
 fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
-    ui.heading("Export zoom animation");
-
     run_animation_step(ui, app);
 
     if app.export.anim_job.is_none() {
