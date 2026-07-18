@@ -6,7 +6,7 @@ use crate::ui::bookmarks::BookmarksState;
 use crate::ui::export_panel::ExportState;
 use crate::ui::palette_editor::PaletteEditorState;
 use crate::ui::side_panel::reset_center;
-use crate::ui::{bookmarks, export_panel, palette_editor, side_panel, theme, viewport};
+use crate::ui::{about, bookmarks, export_panel, palette_editor, side_panel, theme, viewport};
 use crate::view_state::{PropertiesTab, ViewState};
 
 pub struct FractalApp {
@@ -73,6 +73,11 @@ fn header_bar(ui: &mut egui::Ui, app: &mut FractalApp) {
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
                 ui.label(egui::RichText::new("🌀 FractalGen").strong().size(15.0).color(theme::ACCENT));
+                ui.label(
+                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .color(theme::TEXT_WEAK)
+                        .small(),
+                );
                 ui.separator();
                 ui.label(egui::RichText::new(app.params.kind.display_name()).color(theme::TEXT_WEAK));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -151,5 +156,6 @@ fn active_tab_content(ui: &mut egui::Ui, app: &mut FractalApp) {
         PropertiesTab::Palette => palette_editor::show(ui, app),
         PropertiesTab::Bookmarks => bookmarks::show(ui, app),
         PropertiesTab::Export => export_panel::show(ui, app),
+        PropertiesTab::About => about::show(ui, app),
     }
 }

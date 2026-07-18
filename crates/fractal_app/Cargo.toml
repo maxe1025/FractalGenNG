@@ -2,6 +2,10 @@
 name = "fractal_app"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+authors = ["Maxe"]
+repository = "https://github.com/maxe1025/FractalGenNG"
+description = "GPU-accelerated fractal explorer with deep zoom, animation export, and a Blender-inspired UI."
 
 [lib]
 name = "fractal_app"

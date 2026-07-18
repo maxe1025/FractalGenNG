@@ -21,11 +21,17 @@ pub enum PropertiesTab {
     Palette,
     Bookmarks,
     Export,
+    About,
 }
 
 impl PropertiesTab {
-    pub const ALL: [PropertiesTab; 4] =
-        [PropertiesTab::Fractal, PropertiesTab::Palette, PropertiesTab::Bookmarks, PropertiesTab::Export];
+    pub const ALL: [PropertiesTab; 5] = [
+        PropertiesTab::Fractal,
+        PropertiesTab::Palette,
+        PropertiesTab::Bookmarks,
+        PropertiesTab::Export,
+        PropertiesTab::About,
+    ];
 
     /// Short glyph shown in the icon-tab column. Plain BMP/emoji glyphs from
     /// egui's bundled icon font — no custom font asset needed.
@@ -35,6 +41,7 @@ impl PropertiesTab {
             PropertiesTab::Palette => "🎨",
             PropertiesTab::Bookmarks => "⭐",
             PropertiesTab::Export => "💾",
+            PropertiesTab::About => "ℹ",
         }
     }
 
@@ -44,6 +51,7 @@ impl PropertiesTab {
             PropertiesTab::Palette => "Palette",
             PropertiesTab::Bookmarks => "Bookmarks",
             PropertiesTab::Export => "Export",
+            PropertiesTab::About => "About",
         }
     }
 }

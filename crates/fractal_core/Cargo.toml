@@ -2,6 +2,10 @@
 name = "fractal_core"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+authors = ["Maxe"]
+repository = "https://github.com/maxe1025/FractalGenNG"
+description = "Pure math/rendering core for FractalGen: fractal kinds, palettes, perturbation-theory deep zoom, and export."
 
 [dependencies]
 astro-float = "0.9.5"
