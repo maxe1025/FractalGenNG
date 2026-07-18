@@ -13,6 +13,7 @@ struct Uniforms {
     // stop_count, multibrot_power (only meaningful when fractal_kind==4)
     iter_kind_stops: vec4<u32>,
     interior_color: vec4<f32>,
+    flags: vec4<u32>, // distance_shading_enabled, unused, unused, unused
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -64,11 +65,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         cyi = cy;
     }
 
+    // Derivative of z_n w.r.t. the quantity that varies across the image —
+    // dc/dc for Mandelbrot (c = pixel), dz_0/dz_0 for Julia (z_0 = pixel) —
+    // only tracked for these two kinds; only they feed it into distance
+    // shading below. d(z_0)/d(z_0) = 1, d(0)/dc = 0.
+    var dzx: f32 = select(0.0, 1.0, fractal_kind == 1u);
+    var dzy: f32 = 0.0;
+
     var iter: u32 = 0u;
     var mag_sq: f32 = zx * zx + zy * zy;
     loop {
         if (iter >= max_iterations || mag_sq > bailout_sq) {
             break;
+        }
+        if (fractal_kind <= 1u) {
+            // dz_{n+1} = 2*z_n*dz_n + addend', where addend' = d(c)/dc = 1
+            // for Mandelbrot, or d(seed)/d(z_0) = 0 for Julia (seed is fixed).
+            let new_dzx = 2.0 * (zx * dzx - zy * dzy) + select(1.0, 0.0, fractal_kind == 1u);
+            let new_dzy = 2.0 * (zx * dzy + zy * dzx);
+            dzx = new_dzx;
+            dzy = new_dzy;
         }
         var new_zx: f32;
         var new_zy: f32;
@@ -115,6 +131,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let smooth_iter = f32(iter) + 1.0 - nu;
         let t = smooth_iter / cycle_count;
         color = sample_palette(t, u.iter_kind_stops.z);
+
+        let distance_shading_enabled = u.flags.x != 0u;
+        if (distance_shading_enabled && fractal_kind <= 1u) {
+            // Exterior distance estimate: |z|*ln|z| / |dz|. Small near the
+            // boundary (dz small relative to z), large far from it.
+            let mag_z = sqrt(mag_sq);
+            let mag_dz = sqrt(dzx * dzx + dzy * dzy);
+            let de = mag_z * log(mag_z) / max(mag_dz, 1e-20);
+            // Normalize to pixels-from-boundary so the shading band's width
+            // stays consistent across zoom levels rather than shrinking to
+            // nothing (or ballooning) as `scale` changes.
+            let pixel_size = 2.0 * scale.y / height;
+            let de_px = de / max(pixel_size, 1e-20);
+            let shade = clamp(de_px / 3.0, 0.0, 1.0);
+            color = vec4<f32>(color.rgb * mix(0.15, 1.0, shade), color.a);
+        }
     }
 
     textureStore(output_tex, vec2<i32>(i32(gid.x), i32(gid.y)), color);

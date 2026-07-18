@@ -38,6 +38,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
                 app.params.palette.interior_color = color.to_array();
             }
         });
+
+        ui.checkbox(&mut app.params.palette.distance_shading, "Distance shading");
+        if app.params.palette.distance_shading && !app.params.kind.supports_distance_shading() {
+            ui.label(
+                egui::RichText::new(
+                    "Distance shading only affects Mandelbrot/Julia — no effect on this fractal type yet.",
+                )
+                .color(theme::TEXT_WEAK)
+                .small(),
+            );
+        }
     });
 }
 

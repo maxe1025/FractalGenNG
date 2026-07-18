@@ -21,110 +21,120 @@ pub struct Palette {
     /// giving the classic banded fractal look.
     pub cycle_count: f32,
     pub interior_color: [u8; 4],
+    /// Darkens escaping pixels near the fractal boundary using a distance
+    /// estimate (`|z|·ln|z| / |dz|`), giving a thin embossed/contour-line
+    /// look. Only Mandelbrot/Julia compute the derivative this needs — see
+    /// `shaders/standard.wgsl`.
+    #[serde(default)]
+    pub distance_shading: bool,
 }
 
 impl Palette {
+    fn from_stops(stops: Vec<GradientStop>, cycle_count: f32, interior_color: [u8; 4]) -> Self {
+        Self { stops, cycle_count, interior_color, distance_shading: false }
+    }
+
     pub fn fire() -> Self {
-        Self {
-            stops: vec![
+        Self::from_stops(
+            vec![
                 GradientStop { position: 0.0, color: [10, 10, 40, 255] },
                 GradientStop { position: 0.25, color: [80, 30, 120, 255] },
                 GradientStop { position: 0.5, color: [220, 60, 40, 255] },
                 GradientStop { position: 0.75, color: [250, 180, 30, 255] },
                 GradientStop { position: 1.0, color: [255, 250, 220, 255] },
             ],
-            cycle_count: 6.0,
-            interior_color: [0, 0, 0, 255],
-        }
+            6.0,
+            [0, 0, 0, 255],
+        )
     }
 
     pub fn ocean() -> Self {
-        Self {
-            stops: vec![
+        Self::from_stops(
+            vec![
                 GradientStop { position: 0.0, color: [5, 15, 40, 255] },
                 GradientStop { position: 0.3, color: [10, 60, 100, 255] },
                 GradientStop { position: 0.6, color: [20, 140, 160, 255] },
                 GradientStop { position: 0.85, color: [140, 220, 210, 255] },
                 GradientStop { position: 1.0, color: [240, 255, 250, 255] },
             ],
-            cycle_count: 6.0,
-            interior_color: [0, 0, 10, 255],
-        }
+            6.0,
+            [0, 0, 10, 255],
+        )
     }
 
     pub fn grayscale() -> Self {
-        Self {
-            stops: vec![
+        Self::from_stops(
+            vec![
                 GradientStop { position: 0.0, color: [0, 0, 0, 255] },
                 GradientStop { position: 1.0, color: [255, 255, 255, 255] },
             ],
-            cycle_count: 10.0,
-            interior_color: [0, 0, 0, 255],
-        }
+            10.0,
+            [0, 0, 0, 255],
+        )
     }
 
     pub fn twilight() -> Self {
-        Self {
-            stops: vec![
+        Self::from_stops(
+            vec![
                 GradientStop { position: 0.0, color: [15, 10, 40, 255] },
                 GradientStop { position: 0.3, color: [80, 20, 90, 255] },
                 GradientStop { position: 0.55, color: [180, 50, 110, 255] },
                 GradientStop { position: 0.8, color: [255, 140, 120, 255] },
                 GradientStop { position: 1.0, color: [255, 230, 200, 255] },
             ],
-            cycle_count: 6.0,
-            interior_color: [10, 5, 20, 255],
-        }
+            6.0,
+            [10, 5, 20, 255],
+        )
     }
 
     pub fn forest() -> Self {
-        Self {
-            stops: vec![
+        Self::from_stops(
+            vec![
                 GradientStop { position: 0.0, color: [5, 15, 10, 255] },
                 GradientStop { position: 0.3, color: [15, 60, 30, 255] },
                 GradientStop { position: 0.55, color: [60, 110, 40, 255] },
                 GradientStop { position: 0.8, color: [170, 190, 60, 255] },
                 GradientStop { position: 1.0, color: [240, 250, 220, 255] },
             ],
-            cycle_count: 6.0,
-            interior_color: [0, 10, 5, 255],
-        }
+            6.0,
+            [0, 10, 5, 255],
+        )
     }
 
     pub fn ice() -> Self {
-        Self {
-            stops: vec![
+        Self::from_stops(
+            vec![
                 GradientStop { position: 0.0, color: [0, 5, 15, 255] },
                 GradientStop { position: 0.3, color: [10, 50, 90, 255] },
                 GradientStop { position: 0.6, color: [60, 160, 220, 255] },
                 GradientStop { position: 0.85, color: [180, 230, 255, 255] },
                 GradientStop { position: 1.0, color: [255, 255, 255, 255] },
             ],
-            cycle_count: 6.0,
-            interior_color: [0, 0, 10, 255],
-        }
+            6.0,
+            [0, 0, 10, 255],
+        )
     }
 
     pub fn neon() -> Self {
-        Self {
-            stops: vec![
+        Self::from_stops(
+            vec![
                 GradientStop { position: 0.0, color: [5, 0, 20, 255] },
                 GradientStop { position: 0.25, color: [255, 0, 180, 255] },
                 GradientStop { position: 0.5, color: [0, 255, 220, 255] },
                 GradientStop { position: 0.75, color: [255, 255, 0, 255] },
                 GradientStop { position: 1.0, color: [255, 255, 255, 255] },
             ],
-            cycle_count: 5.0,
-            interior_color: [0, 0, 0, 255],
-        }
+            5.0,
+            [0, 0, 0, 255],
+        )
     }
 
     /// The traditional full-hue-sweep look classic fractal software (e.g.
     /// Fractint) is known for. Starts and ends on the same red so repeated
     /// cycles (`cycle_count`) tile seamlessly with no visible seam.
     pub fn rainbow() -> Self {
-        Self {
-            stops: vec![
+        Self::from_stops(
+            vec![
                 GradientStop { position: 0.0, color: [255, 0, 0, 255] },
                 GradientStop { position: 0.17, color: [255, 165, 0, 255] },
                 GradientStop { position: 0.33, color: [255, 255, 0, 255] },
@@ -133,9 +143,9 @@ impl Palette {
                 GradientStop { position: 0.83, color: [160, 0, 220, 255] },
                 GradientStop { position: 1.0, color: [255, 0, 0, 255] },
             ],
-            cycle_count: 3.0,
-            interior_color: [0, 0, 0, 255],
-        }
+            3.0,
+            [0, 0, 0, 255],
+        )
     }
 
     /// Built-in presets shown in the palette editor's preset dropdown.

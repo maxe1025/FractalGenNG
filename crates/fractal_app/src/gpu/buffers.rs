@@ -16,6 +16,8 @@ pub struct Uniforms {
     /// meaningful when fractal_kind == 4 (Multibrot), else 0)
     pub iter_kind_stops: [u32; 4],
     pub interior_color: [f32; 4],
+    /// (distance_shading_enabled, unused, unused, unused)
+    pub flags: [u32; 4],
 }
 
 impl Uniforms {
@@ -44,6 +46,7 @@ impl Uniforms {
                 interior[2] as f32 / 255.0,
                 interior[3] as f32 / 255.0,
             ],
+            flags: [u32::from(params.palette.distance_shading), 0, 0, 0],
         }
     }
 }

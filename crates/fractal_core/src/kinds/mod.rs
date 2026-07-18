@@ -75,6 +75,18 @@ impl FractalKind {
     pub fn supports_perturbation(self) -> bool {
         matches!(self, FractalKind::Mandelbrot | FractalKind::Julia { .. })
     }
+
+    /// Whether `shaders/standard.wgsl` tracks the derivative
+    /// (`dz/dc` for Mandelbrot, `dz/dz_0` for Julia) that distance-estimator
+    /// shading needs. Coincides with [`Self::supports_perturbation`] today
+    /// (same two kinds, for unrelated reasons — the shader just hasn't
+    /// grown a derivative recurrence for the others yet), but is a distinct
+    /// concept: this gates a standard-shader coloring feature, that gates
+    /// the perturbation deep-zoom pipeline. Kept separate so the two can
+    /// diverge without silently changing the other's behavior.
+    pub fn supports_distance_shading(self) -> bool {
+        matches!(self, FractalKind::Mandelbrot | FractalKind::Julia { .. })
+    }
 }
 
 #[cfg(test)]
