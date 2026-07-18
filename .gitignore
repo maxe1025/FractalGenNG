@@ -1,0 +1,11 @@
+/target
+**/target
+
+# Claude Code project config (contains an unrelated leftover launch config,
+# not part of this project)
+/.claude
+
+# OS/editor cruft
+.DS_Store
+Thumbs.db
+*.swp

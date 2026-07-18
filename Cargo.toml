@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["crates/fractal_core", "crates/fractal_app"]
+
+[profile.release]
+opt-level = 3
+lto = true
