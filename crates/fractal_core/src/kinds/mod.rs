@@ -87,6 +87,41 @@ impl FractalKind {
     pub fn supports_distance_shading(self) -> bool {
         matches!(self, FractalKind::Mandelbrot | FractalKind::Julia { .. })
     }
+
+    /// The single free parameter this kind's iteration formula exposes for
+    /// timeline animation, if any — Julia's seed, Multibrot's power. Kinds
+    /// with no free parameter (Mandelbrot, Burning Ship, Tricorn) have
+    /// `KindParam::None`. `zoom` is always animatable regardless of kind and
+    /// isn't part of this — see `export::animation::Timeline`.
+    pub fn animatable_param(self) -> KindParam {
+        match self {
+            FractalKind::Julia { seed } => KindParam::Seed(seed),
+            FractalKind::Multibrot { power } => KindParam::Power(power),
+            FractalKind::Mandelbrot | FractalKind::BurningShip | FractalKind::Tricorn => KindParam::None,
+        }
+    }
+
+    /// Rebuilds this kind with `param` applied. If `param`'s variant doesn't
+    /// match what this kind actually animates (e.g. a `Seed` handed to a
+    /// `Mandelbrot`), returns `self` unchanged rather than panicking — a
+    /// mismatch here means caller-side inconsistency (a keyframe built
+    /// against a different kind than the timeline's `base`), not something
+    /// a render should crash over.
+    pub fn with_animatable_param(self, param: KindParam) -> Self {
+        match (self, param) {
+            (FractalKind::Julia { .. }, KindParam::Seed(seed)) => FractalKind::Julia { seed },
+            (FractalKind::Multibrot { .. }, KindParam::Power(power)) => FractalKind::Multibrot { power },
+            _ => self,
+        }
+    }
+}
+
+/// A kind's animatable free parameter — see [`FractalKind::animatable_param`].
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum KindParam {
+    None,
+    Seed([f64; 2]),
+    Power(f64),
 }
 
 #[cfg(test)]
@@ -117,5 +152,30 @@ mod tests {
         assert!(!FractalKind::BurningShip.supports_perturbation());
         assert!(!FractalKind::Tricorn.supports_perturbation());
         assert!(!FractalKind::Multibrot { power: 3.0 }.supports_perturbation());
+    }
+
+    #[test]
+    fn kinds_without_a_free_parameter_report_none() {
+        assert_eq!(FractalKind::Mandelbrot.animatable_param(), KindParam::None);
+        assert_eq!(FractalKind::BurningShip.animatable_param(), KindParam::None);
+        assert_eq!(FractalKind::Tricorn.animatable_param(), KindParam::None);
+    }
+
+    #[test]
+    fn julia_and_multibrot_animatable_param_round_trips() {
+        let julia = FractalKind::Julia { seed: [0.1, 0.2] };
+        assert_eq!(julia.animatable_param(), KindParam::Seed([0.1, 0.2]));
+        assert_eq!(julia.with_animatable_param(KindParam::Seed([0.3, 0.4])), FractalKind::Julia { seed: [0.3, 0.4] });
+
+        let multibrot = FractalKind::Multibrot { power: 3.0 };
+        assert_eq!(multibrot.animatable_param(), KindParam::Power(3.0));
+        assert_eq!(multibrot.with_animatable_param(KindParam::Power(5.0)), FractalKind::Multibrot { power: 5.0 });
+    }
+
+    #[test]
+    fn with_animatable_param_ignores_mismatched_variant() {
+        // A Seed handed to a kind with no seed just leaves it unchanged,
+        // rather than panicking — defensive against caller-side mismatches.
+        assert_eq!(FractalKind::Mandelbrot.with_animatable_param(KindParam::Seed([1.0, 2.0])), FractalKind::Mandelbrot);
     }
 }

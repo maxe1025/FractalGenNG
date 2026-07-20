@@ -7,8 +7,9 @@
 //! `frame_with_zoom` precision-upgrade path `export_panel.rs` relies on.
 
 use fractal_app::gpu::renderer::FractalRenderer;
-use fractal_core::export::animation::{generate_zoom_frames, ZoomCurve};
+use fractal_core::export::animation::{Easing, Timeline};
 use fractal_core::hp::HpComplex;
+use fractal_core::kinds::KindParam;
 use fractal_core::{FractalKind, FractalParams, Palette};
 
 fn main() {
@@ -84,7 +85,9 @@ async fn run() {
         bailout_radius: 4.0,
         palette: Palette::fire(),
     };
-    let frames = generate_zoom_frames(&base, 1.0, 1.0e12, 4, ZoomCurve::Exponential);
+    let timeline =
+        Timeline::two_point(base, (1.0, KindParam::None), (1.0e12, KindParam::None), 4, Easing::Linear);
+    let frames = timeline.generate_frames();
     for (i, frame) in frames.iter().enumerate() {
         println!(
             "frame {i}: zoom={:e} center.precision_bits={}",
