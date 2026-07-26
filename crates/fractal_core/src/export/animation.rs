@@ -95,7 +95,15 @@ impl Timeline {
         (0..=last.frame).map(|frame| self.params_at_frame(frame)).collect()
     }
 
-    fn params_at_frame(&self, frame: u32) -> FractalParams {
+    /// The interpolated `(zoom, kind_param)` at an arbitrary frame within
+    /// the timeline's range. Exposed for UI code that wants to seed a new
+    /// keyframe's initial values from wherever it's inserted on the
+    /// existing curve, so adding a keyframe doesn't create a visible jump.
+    pub fn value_at_frame(&self, frame: u32) -> (f64, KindParam) {
+        let Some(last) = self.keyframes.last() else { return (1.0, KindParam::None) };
+        if self.keyframes.len() == 1 {
+            return (last.zoom, last.kind_param);
+        }
         let (a, b) = self.segment_for_frame(frame);
         let span = f64::from(b.frame.saturating_sub(a.frame)).max(1.0);
         let t = (f64::from(frame.saturating_sub(a.frame)) / span).clamp(0.0, 1.0);
@@ -103,6 +111,11 @@ impl Timeline {
 
         let zoom = a.zoom * (b.zoom / a.zoom).powf(eased);
         let kind_param = lerp_kind_param(a.kind_param, b.kind_param, eased);
+        (zoom, kind_param)
+    }
+
+    fn params_at_frame(&self, frame: u32) -> FractalParams {
+        let (zoom, kind_param) = self.value_at_frame(frame);
         frame_with_animatable(&self.base, zoom, kind_param)
     }
 
@@ -232,6 +245,29 @@ mod tests {
             acc_first_ratio < linear_first_ratio,
             "accelerating (exponent>1) should start slower: {acc_first_ratio} vs {linear_first_ratio}"
         );
+    }
+
+    #[test]
+    fn value_at_frame_matches_generate_frames_and_seeds_midpoint_correctly() {
+        let base = FractalParams::julia_default();
+        let timeline = Timeline::two_point(
+            base,
+            (1.0, KindParam::Seed([0.0, 0.0])),
+            (1.0, KindParam::Seed([1.0, -2.0])),
+            5,
+            Easing::Linear,
+        );
+        // Matches what generate_frames produces at every frame...
+        let frames = timeline.generate_frames();
+        for (i, frame) in frames.iter().enumerate() {
+            let (zoom, kind_param) = timeline.value_at_frame(i as u32);
+            assert_eq!(zoom, frame.zoom);
+            assert_eq!(kind_param, frame.kind.animatable_param());
+        }
+        // ...and also works at a frame with no keyframe of its own (the
+        // actual use case: seeding a new keyframe inserted mid-segment).
+        let (_, mid_param) = timeline.value_at_frame(2);
+        assert_eq!(mid_param, KindParam::Seed([0.5, -1.0]));
     }
 
     #[test]
