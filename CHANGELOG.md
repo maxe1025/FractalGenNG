@@ -4,6 +4,28 @@ All notable changes to FractalGen are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project follows [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-16
+
+### Added
+
+- **Menger / KIFS**: a kaleidoscopic IFS with scale, offset, and two
+  rotation angles. Its defaults give exactly the Menger sponge and its
+  grid of corridors; rotation twists it into ornamental architecture.
+- **Pseudo-Kleinian**: Knighty's space-filling formula of arches and
+  tunnels — the camera is always inside it.
+- **Sphere inversion ("Inside-Out")** for every 3D formula: with the
+  center inside the fractal's solid, the space around the fractal becomes
+  a closed cave walled in by its surface — e.g. an inside-out Mandelbulb.
+- **3D camera-path animation**: keyframes captured from the fly camera
+  ("Add keyframe from camera", "Use current camera", "Go to"), joined by
+  a centripetal spline for position — no overshoot, even when diving from
+  an overview into a tiny crevice — and a monotone spline for view angles
+  and field of view. Per-segment easing, a scrub slider, real-time
+  preview playback in the viewport, and a warning for frames where the
+  path runs through the fractal. Frames export as PNG sequences with the
+  math overlay's per-frame values and optional ffmpeg stitching, like 2D
+  animations.
+
 ## [0.2.0] - 2026-10-16
 
 ### Added

@@ -17,16 +17,19 @@ Blender-inspired dark UI.
 - **Coloring**: 8 built-in palettes, a gradient stop editor, and an optional
   distance-estimator shading mode that reveals fine boundary detail.
 - **Interactive viewport**: pan/zoom-at-cursor, click-to-seed Julia sets.
-- **3D fractals**: ray-marched Mandelbox and Mandelbulb with a fly camera
-  (W/A/S/D/Q/E, drag to look) that can travel through the fractal's caves
-  and crevices without passing through walls.
+- **3D fractals**: ray-marched Mandelbox, Mandelbulb, Menger sponge/KIFS,
+  and pseudo-Kleinian, plus a sphere-inversion mode that turns any of
+  them inside out into a closed cave. A fly camera (W/A/S/D/Q/E, drag to
+  look) travels through their caves and corridors without passing
+  through walls.
 - **Math overlay**: the formula and the actual values behind the current
   frame, shown over the viewport and/or burned into exports.
 - **Export**: still-image PNG export with supersampling (2D and 3D);
-  animation frame-sequence export from a draggable keyframe timeline
-  (zoom, Julia seed, Multibrot power, per-segment easing), an fps field
-  with a live duration estimate, and optional video stitching via a
-  system `ffmpeg` if present on `PATH`.
+  animation frame-sequence export from a draggable keyframe timeline —
+  zoom, Julia seed, and Multibrot power in 2D, smooth camera flights in
+  3D with real-time preview — with per-segment easing, an fps field with
+  a live duration estimate, and optional video stitching via a system
+  `ffmpeg` if present on `PATH`.
 - **Bookmarks**: save/load/go-to named focus points.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history — it's also
