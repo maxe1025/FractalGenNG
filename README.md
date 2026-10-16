@@ -20,8 +20,8 @@ Blender-inspired dark UI.
 - **3D fractals**: ray-marched Mandelbox, Mandelbulb, Menger sponge/KIFS,
   and pseudo-Kleinian, plus a sphere-inversion mode that turns any of
   them inside out into a closed cave. A fly camera (W/A/S/D/Q/E, drag to
-  look) travels through their caves and corridors without passing
-  through walls.
+  look, Z/C to tilt) travels through their caves and corridors without
+  passing through walls.
 - **Math overlay**: the formula and the actual values behind the current
   frame, shown over the viewport and/or burned into exports.
 - **Export**: still-image PNG export with supersampling (2D and 3D);
