@@ -24,12 +24,14 @@ Blender-inspired dark UI.
   passing through walls.
 - **Math overlay**: the formula and the actual values behind the current
   frame, shown over the viewport and/or burned into exports.
+- **Timeline**: a Blender-style timeline below the viewport — scrub the
+  frame ruler, play/loop, set a free start/end range, and key the current
+  view at the playhead with I (zoom, Julia seed, and Multibrot power in
+  2D; smooth camera flights in 3D), with draggable keyframes and
+  per-keyframe easing.
 - **Export**: still-image PNG export with supersampling (2D and 3D);
-  animation frame-sequence export from a draggable keyframe timeline —
-  zoom, Julia seed, and Multibrot power in 2D, smooth camera flights in
-  3D with real-time preview — with per-segment easing, an fps field with
-  a live duration estimate, and optional video stitching via a system
-  `ffmpeg` if present on `PATH`.
+  animation frame-sequence export of the timeline's range, and optional
+  video stitching via a system `ffmpeg` if present on `PATH`.
 - **Bookmarks**: save/load/go-to named focus points.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history — it's also
