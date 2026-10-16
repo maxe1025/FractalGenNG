@@ -106,7 +106,7 @@ impl Formula3D {
             Formula3D::Kifs { offset, .. } => [0.0, 0.0, -3.5 * offset[2].abs().max(0.5)],
             Formula3D::PseudoKleinian { .. } => PSEUDO_KLEINIAN_START,
         };
-        Camera3D { position, yaw: 0.0, pitch: 0.0, fov_y_degrees: 60.0 }
+        Camera3D { position, yaw: 0.0, pitch: 0.0, roll: 0.0, fov_y_degrees: 60.0 }
     }
 
     /// `(distance estimate, orbit trap)` at `p`. The orbit trap is the
@@ -178,7 +178,7 @@ impl Inversion {
     pub fn default_camera(self) -> Camera3D {
         let mut position = self.center;
         position[2] -= 0.3 * self.radius;
-        Camera3D { position, yaw: 0.0, pitch: 0.0, fov_y_degrees: 75.0 }
+        Camera3D { position, yaw: 0.0, pitch: 0.0, roll: 0.0, fov_y_degrees: 75.0 }
     }
 }
 
@@ -312,6 +312,10 @@ pub struct Camera3D {
     pub yaw: f64,
     /// Radians, kept within ±[`MAX_PITCH`].
     pub pitch: f64,
+    /// Tilt around the viewing direction, radians in `[−π, π)`. Positive
+    /// banks right (like an aircraft): the image turns counter-clockwise.
+    #[serde(default)]
+    pub roll: f64,
     pub fov_y_degrees: f64,
 }
 
@@ -325,21 +329,48 @@ impl Camera3D {
         [cp * sy, sp, cp * cy]
     }
 
-    /// Screen-right, perpendicular to forward and world up.
+    /// Screen-right: perpendicular to forward, level with the world
+    /// horizon when unrolled.
     pub fn right(&self) -> [f64; 3] {
-        let (sy, cy) = self.yaw.sin_cos();
-        [cy, 0.0, -sy]
+        let (sr, cr) = self.roll.sin_cos();
+        let (right, up) = (self.level_right(), self.level_up());
+        [0, 1, 2].map(|i| right[i] * cr - up[i] * sr)
     }
 
     /// Screen-up, perpendicular to forward and right.
     pub fn up(&self) -> [f64; 3] {
-        cross(self.forward(), self.right())
+        let (sr, cr) = self.roll.sin_cos();
+        let (right, up) = (self.level_right(), self.level_up());
+        [0, 1, 2].map(|i| up[i] * cr + right[i] * sr)
+    }
+
+    fn level_right(&self) -> [f64; 3] {
+        let (sy, cy) = self.yaw.sin_cos();
+        [cy, 0.0, -sy]
+    }
+
+    fn level_up(&self) -> [f64; 3] {
+        cross(self.forward(), self.level_right())
     }
 
     /// Turns by mouse-look deltas (radians), clamping pitch.
     pub fn rotate(&mut self, delta_yaw: f64, delta_pitch: f64) {
         self.yaw = (self.yaw + delta_yaw).rem_euclid(std::f64::consts::TAU);
         self.pitch = (self.pitch + delta_pitch).clamp(-MAX_PITCH, MAX_PITCH);
+    }
+
+    /// Turns by a mouse-look drag measured in screen space (`right`/`up`
+    /// in radians, as seen in the rolled image), so dragging right turns
+    /// toward the image's right edge whatever the tilt.
+    pub fn rotate_screen(&mut self, right: f64, up: f64) {
+        let (sr, cr) = self.roll.sin_cos();
+        self.rotate(right * cr + up * sr, up * cr - right * sr);
+    }
+
+    /// Tilts by `delta` radians, wrapping into `[−π, π)`.
+    pub fn roll_by(&mut self, delta: f64) {
+        use std::f64::consts::{PI, TAU};
+        self.roll = (self.roll + delta + PI).rem_euclid(TAU) - PI;
     }
 }
 
@@ -484,7 +515,7 @@ mod tests {
 
     #[test]
     fn camera_basis_is_orthonormal_and_right_handed_screen() {
-        let mut cam = Camera3D { position: [0.0; 3], yaw: 0.0, pitch: 0.0, fov_y_degrees: 60.0 };
+        let mut cam = Camera3D { position: [0.0; 3], yaw: 0.0, pitch: 0.0, roll: 0.0, fov_y_degrees: 60.0 };
         assert_close(cam.forward(), [0.0, 0.0, 1.0]);
         assert_close(cam.right(), [1.0, 0.0, 0.0]);
         assert_close(cam.up(), [0.0, 1.0, 0.0]);
@@ -496,6 +527,48 @@ mod tests {
         }
         assert!(dot(f, r).abs() < 1e-12 && dot(f, u).abs() < 1e-12 && dot(r, u).abs() < 1e-12);
         assert!(u[1] > 0.0, "up keeps pointing upward while pitch is within limits");
+    }
+
+    #[test]
+    fn roll_tilts_the_screen_axes_around_the_view_direction() {
+        let mut cam = Camera3D { position: [0.0; 3], yaw: 0.4, pitch: -0.3, roll: 0.0, fov_y_degrees: 60.0 };
+        let (forward, right, up) = (cam.forward(), cam.right(), cam.up());
+        cam.roll_by(std::f64::consts::FRAC_PI_2);
+        // Banking right by 90°: forward unchanged, screen-up is the old
+        // screen-right, screen-right the old screen-down.
+        assert_close(cam.forward(), forward);
+        assert_close(cam.up(), right);
+        assert_close(cam.right(), up.map(|c| -c));
+
+        cam.roll_by(0.7);
+        let (f, r, u) = (cam.forward(), cam.right(), cam.up());
+        assert!(dot(f, r).abs() < 1e-12 && dot(f, u).abs() < 1e-12 && dot(r, u).abs() < 1e-12);
+        assert!((length(r) - 1.0).abs() < 1e-12 && (length(u) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn roll_wraps_into_half_open_range() {
+        let mut cam = Formula3D::default_camera(MANDELBULB_DEFAULT);
+        cam.roll_by(3.0);
+        cam.roll_by(1.0);
+        assert!((cam.roll - (4.0 - std::f64::consts::TAU)).abs() < 1e-12, "{}", cam.roll);
+    }
+
+    #[test]
+    fn screen_space_look_follows_the_tilted_image() {
+        // Rolled 90° right, the image's right edge points to world-down:
+        // dragging right must pitch the view down, not turn it.
+        let mut cam = Formula3D::default_camera(MANDELBULB_DEFAULT);
+        cam.roll = std::f64::consts::FRAC_PI_2;
+        cam.rotate_screen(0.2, 0.0);
+        assert!(cam.yaw.abs() < 1e-12 && (cam.pitch + 0.2).abs() < 1e-12, "yaw {} pitch {}", cam.yaw, cam.pitch);
+    }
+
+    #[test]
+    fn cameras_without_roll_still_deserialize() {
+        let ron = "(position: (0.0, 0.0, -2.0), yaw: 0.5, pitch: 0.1, fov_y_degrees: 60.0)";
+        let cam: Camera3D = ron::from_str(ron).expect("deserialize");
+        assert_eq!(cam.roll, 0.0);
     }
 
     #[test]

@@ -244,7 +244,8 @@ pub fn describe_3d(params: &Params3D, detail: MathDetail) -> Vec<String> {
     }
 
     let cam = &params.camera;
-    lines.push(format!("camera = {}  looking {}", format_vec3(cam.position), format_vec3(cam.forward())));
+    let tilt = if cam.roll != 0.0 { format!("  tilted {}°", format_scalar(cam.roll.to_degrees())) } else { String::new() };
+    lines.push(format!("camera = {}  looking {}{tilt}", format_vec3(cam.position), format_vec3(cam.forward())));
     lines.push(format!(
         "field of view {}°,  {} iterations,  max {} steps",
         format_scalar(cam.fov_y_degrees),
@@ -446,6 +447,14 @@ mod tests {
         assert_eq!(lines[2], "DE = 0.5·ln r·r / dr,   dr → 8·r⁷·dr + 1");
         assert_eq!(lines[3], "camera = (0, 0, −2.6)  looking (0, 0, 1)");
         assert!(lines[4].starts_with("field of view 60°,  12 iterations,  max 300 steps"));
+    }
+
+    #[test]
+    fn tilted_cameras_state_their_tilt() {
+        let mut params = Params3D::new(crate::fractal3d::MANDELBULB_DEFAULT);
+        params.camera.roll = -0.5f64.to_radians() * 30.0;
+        let lines = describe_3d(&params, MathDetail::Values);
+        assert!(lines[3].ends_with("tilted −15°"), "{}", lines[3]);
     }
 
     #[test]

@@ -4,10 +4,10 @@
 //! variant it never overshoots or loops when neighbouring keyframes are
 //! spaced very differently — the normal case when a flight goes from an
 //! overview of the whole fractal down into a crevice a thousand times
-//! smaller, where an overshoot would fly straight into a wall. Yaw, pitch
-//! and field of view use a monotone cubic spline, so the camera never swings
+//! smaller, where an overshoot would fly straight into a wall. Yaw, pitch,
+//! roll and field of view use a monotone cubic spline, so the camera never swings
 //! past a keyframe's angle or drifts while two keyframes agree, with yaw
-//! unwrapped so it always turns the short way around.
+//! and roll unwrapped so they always turn the short way around.
 
 use serde::{Deserialize, Serialize};
 
@@ -58,14 +58,16 @@ impl CameraPath {
 
         let frames: Vec<f64> = keys.iter().map(|k| f64::from(k.frame)).collect();
         let scalar = |values: Vec<f64>| monotone_cubic(&frames, &values, i, t);
-        let yaw = scalar(unwrapped_yaws(keys));
+        let yaw = scalar(unwrapped(keys.iter().map(|k| k.camera.yaw)));
         let pitch = scalar(keys.iter().map(|k| k.camera.pitch).collect());
+        let roll = scalar(unwrapped(keys.iter().map(|k| k.camera.roll)));
         let fov = scalar(keys.iter().map(|k| k.camera.fov_y_degrees).collect());
 
         Camera3D {
             position,
             yaw: yaw.rem_euclid(std::f64::consts::TAU),
             pitch: pitch.clamp(-MAX_PITCH, MAX_PITCH),
+            roll: (roll + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI,
             fov_y_degrees: fov.clamp(1.0, 179.0),
         }
     }
@@ -105,19 +107,19 @@ fn segment_index(keys: &[CameraKeyframe], frame: u32) -> usize {
     keys.iter().rposition(|k| k.frame <= frame).unwrap_or(0).min(last_start)
 }
 
-/// Each keyframe's yaw, shifted by whole turns so consecutive yaws differ
-/// by at most half a turn.
-fn unwrapped_yaws(keys: &[CameraKeyframe]) -> Vec<f64> {
+/// Angles shifted by whole turns so consecutive ones differ by at most half
+/// a turn — interpolating these turns the short way around.
+fn unwrapped(angles: impl Iterator<Item = f64>) -> Vec<f64> {
     use std::f64::consts::{PI, TAU};
-    let mut yaws: Vec<f64> = Vec::with_capacity(keys.len());
-    for key in keys {
-        let yaw = match yaws.last() {
-            Some(&previous) => previous + (key.camera.yaw - previous + PI).rem_euclid(TAU) - PI,
-            None => key.camera.yaw,
+    let mut out: Vec<f64> = Vec::new();
+    for angle in angles {
+        let angle = match out.last() {
+            Some(&previous) => previous + (angle - previous + PI).rem_euclid(TAU) - PI,
+            None => angle,
         };
-        yaws.push(yaw);
+        out.push(angle);
     }
-    yaws
+    out
 }
 
 fn mirror(about: [f64; 3], p: [f64; 3]) -> [f64; 3] {
@@ -195,7 +197,7 @@ mod tests {
     use crate::fractal3d::{MANDELBOX_DEFAULT, MANDELBULB_DEFAULT};
 
     fn cam(position: [f64; 3], yaw: f64) -> Camera3D {
-        Camera3D { position, yaw, pitch: 0.0, fov_y_degrees: 60.0 }
+        Camera3D { position, yaw, pitch: 0.0, roll: 0.0, fov_y_degrees: 60.0 }
     }
 
     fn key(frame: u32, camera: Camera3D) -> CameraKeyframe {
@@ -285,6 +287,19 @@ mod tests {
             assert!(yaw >= previous - 1e-12 && yaw <= 1.2 + 1e-12, "frame {frame}: {yaw}");
             previous = yaw;
         }
+    }
+
+    #[test]
+    fn roll_is_keyframed_and_tilts_the_short_way_round() {
+        let mut a = cam([0.0, 0.0, -3.0], 0.0);
+        let mut b = cam([0.0, 0.0, -2.0], 0.0);
+        a.roll = 3.0; // just short of +π
+        b.roll = -3.0; // just past −π: 0.28 rad further, not 6 back
+        let path = path(vec![key(0, a), key(10, b)]);
+        assert!((path.camera_at_frame(0).roll - 3.0).abs() < 1e-9);
+        assert!((path.camera_at_frame(10).roll + 3.0).abs() < 1e-9);
+        let mid = path.camera_at_frame(5).roll;
+        assert!(mid.abs() > 3.0, "should pass through ±π, got {mid}");
     }
 
     #[test]

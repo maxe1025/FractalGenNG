@@ -1,8 +1,8 @@
 //! The 3D viewport: a fly camera over the ray-marched fractal. W/A/S/D move,
-//! Q/E move down/up, left-drag looks around, the scroll wheel sets the fly
-//! speed and Shift boosts it. Speed is measured in multiples of the camera's
-//! clearance (its distance to the surface) per second, so flying stays
-//! controllable however deep into a crevice the camera gets — and
+//! Q/E move down/up, Z/C tilt, left-drag looks around, the scroll wheel sets
+//! the fly speed and Shift boosts it. Speed is measured in multiples of the
+//! camera's clearance (its distance to the surface) per second, so flying
+//! stays controllable however deep into a crevice the camera gets — and
 //! `Params3D::move_camera` keeps it from ever passing through a wall.
 //!
 //! While the camera moves, the fractal renders at a fraction of the
@@ -21,6 +21,10 @@ const PREVIEW_DOWNSCALE: f32 = 3.0;
 const SETTLE_TIME: Duration = Duration::from_millis(200);
 /// Fly-speed multiplier while Shift is held.
 const BOOST: f64 = 4.0;
+/// Tilt rate for Z/C, radians per second (~57°/s).
+const ROLL_SPEED: f64 = 1.0;
+/// Tilt-rate multiplier while Shift is held.
+const ROLL_BOOST: f64 = 3.0;
 pub const FLY_SPEED_RANGE: std::ops::RangeInclusive<f64> = 0.05..=50.0;
 /// Floor for the clearance the fly speed scales with, so a camera that ended
 /// up inside the solid (clearance ≤ 0) can still move back out.
@@ -79,7 +83,7 @@ pub fn status_text(app: &FractalApp) -> String {
     let p = app.params3d.camera.position;
     format!(
         "camera: {:.5}, {:.5}, {:.5}   clearance: {:.3e}   speed: ×{:.2}   \
-         [W/A/S/D move · Q/E down/up · drag to look · scroll: speed · Shift: fast]",
+         [W/A/S/D move · Q/E down/up · Z/C tilt · drag to look · scroll: speed · Shift: fast]",
         p[0],
         p[1],
         p[2],
@@ -98,7 +102,7 @@ fn fly(ui: &egui::Ui, response: &egui::Response, rect: egui::Rect, app: &mut Fra
         let camera = &mut app.params3d.camera;
         // Dragging across the full viewport height turns by one field of view.
         let radians_per_point = camera.fov_y_degrees.to_radians() / f64::from(rect.height());
-        camera.rotate(f64::from(delta.x) * radians_per_point, -f64::from(delta.y) * radians_per_point);
+        camera.rotate_screen(f64::from(delta.x) * radians_per_point, -f64::from(delta.y) * radians_per_point);
         moved |= delta != egui::Vec2::ZERO;
     }
 
@@ -114,13 +118,19 @@ fn fly(ui: &egui::Ui, response: &egui::Response, rect: egui::Rect, app: &mut Fra
     if ui.ctx().egui_wants_keyboard_input() {
         return moved;
     }
-    let (axes, dt, boost) = ui.input(|i| {
+    let (axes, tilt, dt, boost) = ui.input(|i| {
         let axis = |pos: Key, neg: Key| f64::from(u8::from(i.key_down(pos))) - f64::from(u8::from(i.key_down(neg)));
         // (right, up, forward)
         let axes = [axis(Key::D, Key::A), axis(Key::E, Key::Q), axis(Key::W, Key::S)];
         // Clamped so a hitch (or the first frame after idling) can't jump far.
-        (axes, f64::from(i.stable_dt).min(0.1), i.modifiers.shift)
+        (axes, axis(Key::C, Key::Z), f64::from(i.stable_dt).min(0.1), i.modifiers.shift)
     });
+    if tilt != 0.0 {
+        let speed = if boost { ROLL_SPEED * ROLL_BOOST } else { ROLL_SPEED };
+        app.params3d.camera.roll_by(tilt * speed * dt);
+        moved = true;
+        ui.ctx().request_repaint();
+    }
     if axes == [0.0; 3] {
         return moved;
     }

@@ -4,6 +4,16 @@ All notable changes to FractalGen are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Camera tilt (roll)** in 3D: Z/C tilt the camera around its viewing
+  direction (Shift for faster), with a tilt slider and a "Level" button in
+  the camera panel. Mouse-look follows the tilted image, tilt is keyframed
+  and smoothly interpolated in camera-path animations (always the short
+  way round), and the math overlay states it.
+
 ## [0.3.0] - 2026-10-16
 
 ### Added

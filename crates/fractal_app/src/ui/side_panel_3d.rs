@@ -145,6 +145,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
             ui.add(egui::Slider::new(&mut app.params3d.camera.fov_y_degrees, 20.0..=120.0).suffix("°"));
         });
         ui.horizontal(|ui| {
+            ui.label("Tilt:");
+            let mut degrees = app.params3d.camera.roll.to_degrees();
+            if ui.add(egui::Slider::new(&mut degrees, -180.0..=180.0).suffix("°")).changed() {
+                app.params3d.camera.roll = 0.0;
+                app.params3d.camera.roll_by(degrees.to_radians());
+            }
+            if ui.small_button("Level").on_hover_text("Straighten the horizon (tilt 0°).").clicked() {
+                app.params3d.camera.roll = 0.0;
+            }
+        });
+        ui.horizontal(|ui| {
             ui.label("Fly speed:");
             ui.add(egui::Slider::new(&mut app.view.fly_speed, FLY_SPEED_RANGE).logarithmic(true).prefix("×"));
         });
@@ -152,7 +163,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
             app.reset_view();
         }
         ui.label(
-            egui::RichText::new("W/A/S/D move · Q/E down/up · drag to look · scroll: speed · Shift: fast")
+            egui::RichText::new("W/A/S/D move · Q/E down/up · Z/C tilt · drag to look · scroll: speed · Shift: fast")
                 .color(theme::TEXT_WEAK)
                 .small(),
         );
