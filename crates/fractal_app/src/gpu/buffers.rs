@@ -1,4 +1,5 @@
 use bytemuck::{Pod, Zeroable};
+use fractal_core::fractal3d::{Formula3D, Params3D};
 use fractal_core::palette::MAX_GPU_STOPS;
 use fractal_core::FractalParams;
 
@@ -100,6 +101,59 @@ impl PerturbationUniforms {
                 interior[3] as f32 / 255.0,
             ],
             correction: [u32::from(is_correction_pass), 0, 0, 0],
+        }
+    }
+}
+
+/// Must stay byte-layout-compatible with the `RayUniforms` struct in
+/// `shaders/raymarch.wgsl`. All vec4s, like `Uniforms`.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub struct RayUniforms {
+    /// (position.xyz, tan(fov_y / 2))
+    pub cam_pos: [f32; 4],
+    /// (right.xyz, detail in pixels)
+    pub cam_right: [f32; 4],
+    /// (up.xyz, max ray distance)
+    pub cam_up: [f32; 4],
+    /// (forward.xyz, step factor)
+    pub cam_forward: [f32; 4],
+    /// Mandelbulb: (power, 0, 0, fog distance); Mandelbox: (scale,
+    /// min_radius, fixed_radius, fog distance). Fog distance is in world
+    /// units, 0 = off.
+    pub formula: [f32; 4],
+    pub background: [f32; 4],
+    /// (formula_id, max_iterations, max_steps, stop_count)
+    pub counts: [u32; 4],
+    /// (cycle_count, unused, unused, unused)
+    pub coloring: [f32; 4],
+}
+
+impl RayUniforms {
+    pub fn from_params(params: &Params3D) -> Self {
+        let cam = &params.camera;
+        let tan_half_fov = (cam.fov_y_degrees.to_radians() * 0.5).tan();
+        let vec = |v: [f64; 3], w: f64| [v[0] as f32, v[1] as f32, v[2] as f32, w as f32];
+        // `fog_distance` is relative to the camera's clearance (see
+        // `Params3D::fog_distance`); the shader wants world units.
+        let fog = if params.fog_distance > 0.0 { params.fog_distance * params.camera_clearance().max(1e-9) } else { 0.0 };
+        let formula = match params.formula {
+            Formula3D::Mandelbulb { power } => [power as f32, 0.0, 0.0, fog as f32],
+            Formula3D::Mandelbox { scale, min_radius, fixed_radius } => {
+                [scale as f32, min_radius as f32, fixed_radius as f32, fog as f32]
+            }
+        };
+        let (_, _, stop_count) = params.palette.to_gpu_stops();
+        let bg = params.palette.interior_color;
+        Self {
+            cam_pos: vec(cam.position, tan_half_fov),
+            cam_right: vec(cam.right(), params.detail),
+            cam_up: vec(cam.up(), params.max_distance()),
+            cam_forward: vec(cam.forward(), params.step_factor),
+            formula,
+            background: [bg[0] as f32 / 255.0, bg[1] as f32 / 255.0, bg[2] as f32 / 255.0, 1.0],
+            counts: [params.formula.shader_id(), params.max_iterations, params.max_steps, stop_count],
+            coloring: [params.palette.cycle_count.max(0.0001), 0.0, 0.0, 0.0],
         }
     }
 }

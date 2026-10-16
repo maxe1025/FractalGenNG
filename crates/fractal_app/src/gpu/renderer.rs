@@ -1,11 +1,12 @@
 use bytemuck::cast_slice;
+use fractal_core::fractal3d::Params3D;
 use fractal_core::hp::ZOOM_PERTURBATION_THRESHOLD;
 use fractal_core::palette::MAX_GPU_STOPS;
 use fractal_core::{orbit, FractalKind, FractalParams, HpComplex};
 use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
-use super::buffers::{gpu_stop_arrays, PerturbationUniforms, Uniforms};
+use super::buffers::{gpu_stop_arrays, PerturbationUniforms, RayUniforms, Uniforms};
 
 const STANDARD_SRC: &str = concat!(
     include_str!("../../../../shaders/palette.wgsl"),
@@ -15,13 +16,20 @@ const PERTURBATION_SRC: &str = concat!(
     include_str!("../../../../shaders/palette.wgsl"),
     include_str!("../../../../shaders/perturbation.wgsl"),
 );
+const RAYMARCH_SRC: &str = concat!(
+    include_str!("../../../../shaders/palette.wgsl"),
+    include_str!("../../../../shaders/raymarch.wgsl"),
+);
 const WORKGROUP_SIZE: u32 = 8;
 /// Bounded retry count for secondary reference orbits — if residual glitches
 /// still remain after this many additional references, we give up and leave
 /// whatever the last pass produced (a graceful, if imperfect, degradation).
 const MAX_GLITCH_CORRECTION_PASSES: u32 = 4;
 
-struct StandardPipeline {
+/// A compute pipeline with the basic binding set — uniforms (0), palette
+/// stops (1, 2), output texture (3) — shared by the standard 2D shader and
+/// the 3D ray-march shader.
+struct BasicPipeline {
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     uniform_buffer: wgpu::Buffer,
@@ -53,7 +61,8 @@ struct OrbitKey {
     bailout_radius: f64,
 }
 
-/// Owns both compute pipelines (standard f32, deep-zoom perturbation) and the
+/// Owns the compute pipelines (standard f32 2D, deep-zoom perturbation 2D,
+/// 3D ray-march) and the
 /// live viewport's output texture (registered with egui so it can be
 /// displayed via `ui.image`). Also used to render arbitrary off-screen
 /// resolutions for still-image and animation-frame export via
@@ -69,7 +78,8 @@ pub struct FractalRenderer {
     /// Whether the active GPU/driver granted `wgpu::Features::SHADER_F64`,
     /// needed for the perturbation-theory deep-zoom shader's delta iteration.
     supports_f64: bool,
-    standard: StandardPipeline,
+    standard: BasicPipeline,
+    raymarch: BasicPipeline,
     /// `None` when `!supports_f64` — deep zoom simply isn't available.
     perturbation: Option<PerturbationPipeline>,
     orbit_cache: Option<(OrbitKey, Vec<[f64; 2]>)>,
@@ -99,7 +109,24 @@ impl FractalRenderer {
 
         let (_texture, output_view) = create_output_texture(device, width, height);
 
-        let standard = create_standard_pipeline(device, &stop_pos_buffer, &stop_color_buffer, &output_view);
+        let standard = create_basic_pipeline(
+            device,
+            "standard",
+            STANDARD_SRC,
+            std::mem::size_of::<Uniforms>() as u64,
+            &stop_pos_buffer,
+            &stop_color_buffer,
+            &output_view,
+        );
+        let raymarch = create_basic_pipeline(
+            device,
+            "raymarch",
+            RAYMARCH_SRC,
+            std::mem::size_of::<RayUniforms>() as u64,
+            &stop_pos_buffer,
+            &stop_color_buffer,
+            &output_view,
+        );
         let perturbation = supports_f64.then(|| {
             create_perturbation_pipeline(device, &stop_pos_buffer, &stop_color_buffer, &output_view, width, height, 1)
         });
@@ -116,6 +143,7 @@ impl FractalRenderer {
             texture_id,
             supports_f64,
             standard,
+            raymarch,
             perturbation,
             orbit_cache: None,
         }
@@ -141,10 +169,18 @@ impl FractalRenderer {
             return;
         }
         let (_texture, output_view) = create_output_texture(device, width, height);
-        self.standard.bind_group = create_standard_bind_group(
+        self.standard.bind_group = create_basic_bind_group(
             device,
             &self.standard.bind_group_layout,
             &self.standard.uniform_buffer,
+            &self.stop_pos_buffer,
+            &self.stop_color_buffer,
+            &output_view,
+        );
+        self.raymarch.bind_group = create_basic_bind_group(
+            device,
+            &self.raymarch.bind_group_layout,
+            &self.raymarch.uniform_buffer,
             &self.stop_pos_buffer,
             &self.stop_color_buffer,
             &output_view,
@@ -178,6 +214,58 @@ impl FractalRenderer {
             return;
         }
         self.render_standard(device, queue, params);
+    }
+
+    /// Ray-marches a 3D fractal into the viewport texture.
+    pub fn render_3d(&self, device: &wgpu::Device, queue: &wgpu::Queue, params: &Params3D) {
+        let uniforms = RayUniforms::from_params(params);
+        queue.write_buffer(&self.raymarch.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        let (positions, colors, _) = params.palette.to_gpu_stops();
+        queue.write_buffer(&self.stop_pos_buffer, 0, cast_slice(&positions));
+        queue.write_buffer(&self.stop_color_buffer, 0, cast_slice(&colors));
+        dispatch(device, queue, &self.raymarch.pipeline, &self.raymarch.bind_group, self.width, self.height);
+    }
+
+    /// Ray-marches a 3D fractal into a fresh off-screen texture and reads it
+    /// back as tightly-packed RGBA8, for export.
+    pub fn render_3d_to_rgba(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        params: &Params3D,
+        width: u32,
+        height: u32,
+    ) -> Vec<u8> {
+        let uniforms = RayUniforms::from_params(params);
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("export_ray_uniform_buffer"),
+            contents: bytemuck::bytes_of(&uniforms),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let (positions, colors, _) = params.palette.to_gpu_stops();
+        let stop_pos_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("export_ray_stop_pos_buffer"),
+            contents: cast_slice(&positions),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let stop_color_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("export_ray_stop_color_buffer"),
+            contents: cast_slice(&colors),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let (texture, view) = create_output_texture(device, width, height);
+        let bind_group = create_basic_bind_group(
+            device,
+            &self.raymarch.bind_group_layout,
+            &uniform_buffer,
+            &stop_pos_buffer,
+            &stop_color_buffer,
+            &view,
+        );
+
+        dispatch(device, queue, &self.raymarch.pipeline, &bind_group, width, height);
+        read_texture_to_rgba(device, queue, &texture, width, height)
     }
 
     fn render_standard(&self, device: &wgpu::Device, queue: &wgpu::Queue, params: &FractalParams) {
@@ -406,7 +494,7 @@ impl FractalRenderer {
         });
 
         let (texture, view) = create_output_texture(device, width, height);
-        let bind_group = create_standard_bind_group(
+        let bind_group = create_basic_bind_group(
             device,
             &self.standard.bind_group_layout,
             &uniform_buffer,
@@ -591,19 +679,24 @@ fn read_write_storage_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
-fn create_standard_pipeline(
+/// Builds a [`BasicPipeline`] for `source` (a full WGSL module whose
+/// uniform struct is `uniform_size` bytes). `name` prefixes the debug labels.
+fn create_basic_pipeline(
     device: &wgpu::Device,
+    name: &str,
+    source: &str,
+    uniform_size: u64,
     stop_pos_buffer: &wgpu::Buffer,
     stop_color_buffer: &wgpu::Buffer,
     output_view: &wgpu::TextureView,
-) -> StandardPipeline {
+) -> BasicPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("standard_shader"),
-        source: wgpu::ShaderSource::Wgsl(STANDARD_SRC.into()),
+        label: Some(&format!("{name}_shader")),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
     });
 
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("standard_bind_group_layout"),
+        label: Some(&format!("{name}_bind_group_layout")),
         entries: &[
             uniform_entry(0),
             read_only_storage_entry(1),
@@ -613,13 +706,13 @@ fn create_standard_pipeline(
     });
 
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("standard_pipeline_layout"),
+        label: Some(&format!("{name}_pipeline_layout")),
         bind_group_layouts: &[Some(&bind_group_layout)],
         immediate_size: 0,
     });
 
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("standard_pipeline"),
+        label: Some(&format!("{name}_pipeline")),
         layout: Some(&pipeline_layout),
         module: &shader,
         entry_point: Some("main"),
@@ -628,13 +721,13 @@ fn create_standard_pipeline(
     });
 
     let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("standard_uniform_buffer"),
-        size: std::mem::size_of::<Uniforms>() as u64,
+        label: Some(&format!("{name}_uniform_buffer")),
+        size: uniform_size,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
-    let bind_group = create_standard_bind_group(
+    let bind_group = create_basic_bind_group(
         device,
         &bind_group_layout,
         &uniform_buffer,
@@ -643,10 +736,10 @@ fn create_standard_pipeline(
         output_view,
     );
 
-    StandardPipeline { pipeline, bind_group_layout, uniform_buffer, bind_group }
+    BasicPipeline { pipeline, bind_group_layout, uniform_buffer, bind_group }
 }
 
-fn create_standard_bind_group(
+fn create_basic_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     uniform_buffer: &wgpu::Buffer,
@@ -655,7 +748,7 @@ fn create_standard_bind_group(
     output_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("standard_bind_group"),
+        label: Some("basic_bind_group"),
         layout,
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() },

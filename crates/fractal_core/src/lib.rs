@@ -1,5 +1,6 @@
 pub mod bookmark;
 pub mod export;
+pub mod fractal3d;
 pub mod hp;
 pub mod kinds;
 pub mod math_overlay;

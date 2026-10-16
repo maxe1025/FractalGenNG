@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::fractal3d::{Formula3D, Params3D};
 use crate::kinds::FractalKind;
 use crate::params::FractalParams;
 
@@ -167,6 +168,90 @@ pub fn describe(params: &FractalParams, detail: MathDetail) -> Vec<String> {
     lines
 }
 
+/// The overlay's lines for one 3D render of `params`.
+pub fn describe_3d(params: &Params3D, detail: MathDetail) -> Vec<String> {
+    let mut lines = Vec::new();
+    match params.formula {
+        Formula3D::Mandelbulb { power } => {
+            let p = format_scalar(power);
+            lines.push(format!("z → {} + c   (r → {}, θ → {p}θ, φ → {p}φ)", power_of("z", power), power_of("r", power)));
+            lines.push("z₀ = c = point on the ray".to_string());
+            lines.push(format!("DE = 0.5·ln r·r / dr,   dr → {p}·{}·dr + 1", power_of("r", power - 1.0)));
+        }
+        Formula3D::Mandelbox { scale, min_radius, fixed_radius } => {
+            let values = detail != MathDetail::Formula;
+            lines.push(if values {
+                format!("z → s·sphereFold(boxFold(z)) + c,   s = {}", format_scalar(scale))
+            } else {
+                "z → s·sphereFold(boxFold(z)) + c".to_string()
+            });
+            lines.push("boxFold: x → clamp(x, −1, 1)·2 − x   (per axis)".to_string());
+            lines.push(if values {
+                format!(
+                    "sphereFold: z·(R/m)² if r < m,  z·(R/r)² if r < R   (m = {}, R = {})",
+                    format_scalar(min_radius),
+                    format_scalar(fixed_radius)
+                )
+            } else {
+                "sphereFold: z·(R/m)² if r < m,  z·(R/r)² if r < R".to_string()
+            });
+            lines.push("z₀ = c = point on the ray,   DE = |z| / |dr|".to_string());
+        }
+    }
+
+    if detail == MathDetail::Formula {
+        lines.push("ray: t → t + DE(camera + t·dir)  until DE < pixel size".to_string());
+        return lines;
+    }
+
+    let cam = &params.camera;
+    lines.push(format!("camera = {}  looking {}", format_vec3(cam.position), format_vec3(cam.forward())));
+    lines.push(format!(
+        "field of view {}°,  {} iterations,  max {} steps",
+        format_scalar(cam.fov_y_degrees),
+        params.max_iterations,
+        params.max_steps
+    ));
+    lines.push(format!(
+        "ray: t → t + {}·DE  until DE < {} px   (clearance {})",
+        format_scalar(params.step_factor),
+        format_scalar(params.detail),
+        format_scalar(params.camera_clearance())
+    ));
+
+    if detail == MathDetail::Full {
+        lines.push(format!(
+            "color = palette(log₂(1 + min|z|²) · {} / 4)",
+            format_scalar(f64::from(params.palette.cycle_count))
+        ));
+        lines.push("light = headlight + key light,  × ambient occlusion".to_string());
+        if params.fog_distance > 0.0 {
+            lines.push(format!("fog = 1 − exp(−t / ({}·clearance))", format_scalar(params.fog_distance)));
+        }
+    }
+    lines
+}
+
+/// `base` raised to `exponent`: a superscript for integers, `^x` otherwise
+/// (the fonts have no superscript decimal point).
+fn power_of(base: &str, exponent: f64) -> String {
+    if exponent.fract() == 0.0 && exponent.abs() < 1e6 {
+        format!("{base}{}", superscript(exponent as i64))
+    } else {
+        format!("{base}^{}", format_scalar(exponent))
+    }
+}
+
+fn format_vec3(v: [f64; 3]) -> String {
+    format!("({}, {}, {})", format_coord(v[0]), format_coord(v[1]), format_coord(v[2]))
+}
+
+/// A coordinate with enough decimals to follow the camera into small
+/// crevices without the line growing unboundedly.
+fn format_coord(x: f64) -> String {
+    trim_fixed(x, 5).replace('-', "−")
+}
+
 fn iteration_formula(kind: FractalKind) -> String {
     match kind {
         FractalKind::Mandelbrot | FractalKind::Julia { .. } => "z → z² + c".to_string(),
@@ -312,6 +397,33 @@ mod tests {
         let params = FractalParams { zoom: 1.0e100, ..FractalParams::default() };
         let center = &describe(&params, MathDetail::Values)[2];
         assert!(center.contains('…'), "{center}");
+    }
+
+    #[test]
+    fn mandelbulb_3d_lines_state_power_and_camera() {
+        let params = Params3D::new(crate::fractal3d::MANDELBULB_DEFAULT);
+        let lines = describe_3d(&params, MathDetail::Values);
+        assert_eq!(lines[0], "z → z⁸ + c   (r → r⁸, θ → 8θ, φ → 8φ)");
+        assert_eq!(lines[2], "DE = 0.5·ln r·r / dr,   dr → 8·r⁷·dr + 1");
+        assert_eq!(lines[3], "camera = (0, 0, −2.6)  looking (0, 0, 1)");
+        assert!(lines[4].starts_with("field of view 60°,  12 iterations,  max 300 steps"));
+    }
+
+    #[test]
+    fn mandelbox_formula_detail_uses_symbols_only() {
+        let params = Params3D::new(crate::fractal3d::MANDELBOX_DEFAULT);
+        let lines = describe_3d(&params, MathDetail::Formula);
+        assert_eq!(lines[0], "z → s·sphereFold(boxFold(z)) + c");
+        assert!(!lines.iter().any(|l| l.contains("camera =")));
+        let values = describe_3d(&params, MathDetail::Full);
+        assert!(values[0].ends_with("s = −1.5"));
+        assert!(values.iter().any(|l| l.starts_with("fog = ")));
+    }
+
+    #[test]
+    fn non_integer_powers_use_caret_notation() {
+        assert_eq!(power_of("z", 8.0), "z⁸");
+        assert_eq!(power_of("z", 7.5), "z^7.5");
     }
 
     #[test]

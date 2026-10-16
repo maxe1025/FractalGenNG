@@ -105,18 +105,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
         {
             let render_w = app.export.width * app.export.supersample;
             let render_h = app.export.height * app.export.supersample;
-            let rgba = app.renderer.render_to_rgba(
-                &app.render_state.device,
-                &app.render_state.queue,
-                &app.params,
-                render_w,
-                render_h,
-            );
+            let (device, queue) = (&app.render_state.device, &app.render_state.queue);
+            let rgba = if app.is_3d() {
+                app.renderer.render_3d_to_rgba(device, queue, &app.params3d, render_w, render_h)
+            } else {
+                app.renderer.render_to_rgba(device, queue, &app.params, render_w, render_h)
+            };
             let result = save_export_frame(
                 rgba,
                 (render_w, render_h),
                 (app.export.width, app.export.height),
-                &app.params,
+                &app.overlay_lines(),
                 &app.overlay,
                 &path,
             );
@@ -171,6 +170,15 @@ fn apply_frame_count(app: &mut FractalApp) {
 
 fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
     run_animation_step(ui, app);
+
+    if app.export.anim_job.is_none() && app.is_3d() {
+        ui.label(
+            egui::RichText::new("Camera-path animation for 3D is not available yet — switch to 2D to animate.")
+                .color(theme::TEXT_WEAK)
+                .small(),
+        );
+        return;
+    }
 
     if app.export.anim_job.is_none() {
         sync_kind_param_defaults(app);
@@ -510,7 +518,7 @@ fn run_animation_step(ui: &mut egui::Ui, app: &mut FractalApp) {
         rgba,
         (render_w, render_h),
         (step.width, step.height),
-        &step.params,
+        &math_overlay::describe(&step.params, step.overlay.detail),
         &step.overlay,
         &path,
     );
@@ -534,20 +542,19 @@ fn run_animation_step(ui: &mut egui::Ui, app: &mut FractalApp) {
 }
 
 /// Downsamples a supersampled render to the export size, burns the math
-/// overlay into it if enabled (after downsampling, so the text stays crisp
-/// at the final resolution), and saves it as a PNG.
+/// overlay's `lines` into it if enabled (after downsampling, so the text
+/// stays crisp at the final resolution), and saves it as a PNG.
 fn save_export_frame(
     rgba: Vec<u8>,
     (render_w, render_h): (u32, u32),
     (width, height): (u32, u32),
-    params: &FractalParams,
+    lines: &[String],
     overlay: &MathOverlay,
     path: &Path,
 ) -> Result<(), ImageError> {
     let mut rgba = image_export::downsample(render_w, render_h, rgba, width, height);
     if overlay.burn_into_exports {
-        let lines = math_overlay::describe(params, overlay.detail);
-        crate::overlay_burn::burn(&mut rgba, width, height, &lines, overlay);
+        crate::overlay_burn::burn(&mut rgba, width, height, lines, overlay);
     }
     image_export::save_png(width, height, &rgba, path)
 }

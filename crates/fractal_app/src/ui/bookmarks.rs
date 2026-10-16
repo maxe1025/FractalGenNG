@@ -11,6 +11,10 @@ pub struct BookmarksState {
 
 pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
     theme::section(ui, "Save current view", |ui| {
+        if app.is_3d() {
+            ui.label(egui::RichText::new("Bookmarks hold 2D views only for now.").color(theme::TEXT_WEAK).small());
+            return;
+        }
         ui.horizontal(|ui| {
             ui.text_edit_singleline(&mut app.bookmarks_ui.new_name);
             let name_valid = !app.bookmarks_ui.new_name.trim().is_empty();
@@ -44,6 +48,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
 
         if let Some(i) = goto_index {
             app.params = app.bookmarks[i].params.clone();
+            app.view.dimension = crate::view_state::Dimension::Two;
         }
         if let Some(i) = delete_index {
             app.bookmarks.remove(i);

@@ -13,7 +13,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
     ui.horizontal_wrapped(|ui| {
         for (name, ctor) in fractal_core::Palette::presets() {
             if ui.button(name).clicked() {
-                app.params.palette = ctor();
+                *app.palette_mut() = ctor();
                 app.palette_ui.selected_stop = 0;
             }
         }
@@ -27,20 +27,25 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
     theme::section(ui, "Coloring", |ui| {
         ui.horizontal(|ui| {
             ui.label("Cycle count:");
-            ui.add(egui::DragValue::new(&mut app.params.palette.cycle_count).range(0.1..=50.0).speed(0.1));
+            ui.add(egui::DragValue::new(&mut app.palette_mut().cycle_count).range(0.1..=50.0).speed(0.1));
         });
 
         ui.horizontal(|ui| {
-            ui.label("Interior color:");
-            let interior = app.params.palette.interior_color;
+            // In 3D the "interior" color fills empty space instead: background and fog.
+            ui.label(if app.is_3d() { "Background & fog:" } else { "Interior color:" });
+            let interior = app.palette().interior_color;
             let mut color = egui::Color32::from_rgba_unmultiplied(interior[0], interior[1], interior[2], interior[3]);
             if egui::color_picker::color_edit_button_srgba(ui, &mut color, egui::color_picker::Alpha::Opaque).changed() {
-                app.params.palette.interior_color = color.to_array();
+                app.palette_mut().interior_color = color.to_array();
             }
         });
 
-        ui.checkbox(&mut app.params.palette.distance_shading, "Distance shading");
-        if app.params.palette.distance_shading && !app.params.kind.supports_distance_shading() {
+        if app.is_3d() {
+            // 3D surfaces are shaded by lighting; distance shading is 2D-only.
+            return;
+        }
+        ui.checkbox(&mut app.palette_mut().distance_shading, "Distance shading");
+        if app.palette().distance_shading && !app.params.kind.supports_distance_shading() {
             ui.label(
                 egui::RichText::new(
                     "Distance shading only affects Mandelbrot/Julia — no effect on this fractal type yet.",
@@ -61,7 +66,7 @@ fn gradient_editor(ui: &mut egui::Ui, app: &mut FractalApp) {
     for i in 0..steps {
         let t0 = i as f32 / steps as f32;
         let t1 = (i + 1) as f32 / steps as f32;
-        let color = app.params.palette.sample((t0 + t1) * 0.5);
+        let color = app.palette().sample((t0 + t1) * 0.5);
         let x0 = rect.left() + t0 * rect.width();
         let x1 = rect.left() + t1 * rect.width();
         ui.painter().rect_filled(
@@ -75,18 +80,18 @@ fn gradient_editor(ui: &mut egui::Ui, app: &mut FractalApp) {
         && let Some(pos) = response.interact_pointer_pos()
     {
         let t = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-        let color = app.params.palette.sample(t);
-        app.params.palette.stops.push(GradientStop { position: t, color });
-        app.params.palette.stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
+        let color = app.palette().sample(t);
+        app.palette_mut().stops.push(GradientStop { position: t, color });
+        app.palette_mut().stops.sort_by(|a, b| a.position.partial_cmp(&b.position).unwrap());
         app.palette_ui.selected_stop =
-            app.params.palette.stops.iter().position(|s| (s.position - t).abs() < 1e-6).unwrap_or(0);
+            app.palette().stops.iter().position(|s| (s.position - t).abs() < 1e-6).unwrap_or(0);
     }
 
     let marker_y = rect.bottom() + 10.0;
     let marker_radius = 6.0;
-    let stop_count = app.params.palette.stops.len();
+    let stop_count = app.palette().stops.len();
     for i in 0..stop_count {
-        let stop = app.params.palette.stops[i];
+        let stop = app.palette().stops[i];
         let x = rect.left() + stop.position * rect.width();
         let marker_rect =
             egui::Rect::from_center_size(egui::pos2(x, marker_y), egui::vec2(marker_radius * 2.0, marker_radius * 2.0));
@@ -105,12 +110,12 @@ fn gradient_editor(ui: &mut egui::Ui, app: &mut FractalApp) {
         }
         if marker_response.dragged() {
             let delta = marker_response.drag_delta().x / rect.width();
-            let lower = if i == 0 { 0.0 } else { app.params.palette.stops[i - 1].position + 0.005 };
+            let lower = if i == 0 { 0.0 } else { app.palette().stops[i - 1].position + 0.005 };
             let upper =
-                if i + 1 == stop_count { 1.0 } else { app.params.palette.stops[i + 1].position - 0.005 };
+                if i + 1 == stop_count { 1.0 } else { app.palette().stops[i + 1].position - 0.005 };
             let (lower, upper) = (lower.min(upper), upper.max(lower));
-            app.params.palette.stops[i].position =
-                (app.params.palette.stops[i].position + delta).clamp(lower, upper);
+            app.palette_mut().stops[i].position =
+                (app.palette().stops[i].position + delta).clamp(lower, upper);
             app.palette_ui.selected_stop = i;
         }
     }
@@ -120,12 +125,14 @@ fn gradient_editor(ui: &mut egui::Ui, app: &mut FractalApp) {
     ui.horizontal(|ui| {
         let can_remove = stop_count > 2;
         if ui.add_enabled(can_remove, egui::Button::new("Remove selected stop")).clicked() {
-            app.params.palette.stops.remove(app.palette_ui.selected_stop);
-            app.palette_ui.selected_stop = app.palette_ui.selected_stop.min(app.params.palette.stops.len() - 1);
+            let selected = app.palette_ui.selected_stop;
+            app.palette_mut().stops.remove(selected);
+            app.palette_ui.selected_stop = app.palette_ui.selected_stop.min(app.palette().stops.len() - 1);
         }
     });
 
-    if let Some(stop) = app.params.palette.stops.get_mut(app.palette_ui.selected_stop) {
+    let selected = app.palette_ui.selected_stop;
+    if let Some(stop) = app.palette_mut().stops.get_mut(selected) {
         ui.horizontal(|ui| {
             ui.label("Stop color:");
             let mut color = egui::Color32::from_rgba_unmultiplied(stop.color[0], stop.color[1], stop.color[2], stop.color[3]);

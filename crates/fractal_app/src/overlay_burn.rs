@@ -124,7 +124,8 @@ impl Canvas<'_> {
 mod tests {
     use super::*;
     use fractal_core::kinds::FractalKind;
-    use fractal_core::math_overlay::{describe, MathDetail, OverlayCorner};
+    use fractal_core::fractal3d::{Formula3D, Params3D, MANDELBOX_DEFAULT, MANDELBULB_DEFAULT};
+    use fractal_core::math_overlay::{describe, describe_3d, MathDetail, OverlayCorner};
     use fractal_core::FractalParams;
 
     #[test]
@@ -144,6 +145,15 @@ mod tests {
                     for line in describe(&params, detail) {
                         assert!(missing_glyphs(&line).is_empty(), "no glyph for {:?} in {line:?}", missing_glyphs(&line));
                     }
+                }
+            }
+        }
+        for formula in [MANDELBULB_DEFAULT, Formula3D::Mandelbulb { power: 7.5 }, MANDELBOX_DEFAULT] {
+            let mut params = Params3D::new(formula);
+            params.camera.position = [-1.234567, 0.000001, 3.0];
+            for detail in MathDetail::ALL {
+                for line in describe_3d(&params, detail) {
+                    assert!(missing_glyphs(&line).is_empty(), "no glyph for {:?} in {line:?}", missing_glyphs(&line));
                 }
             }
         }

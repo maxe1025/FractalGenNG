@@ -2,8 +2,7 @@
 //! Export frames get the same overlay burned in by `crate::overlay_burn`.
 
 use eframe::egui;
-use fractal_core::math_overlay::{describe, MathDetail, MathOverlay, OverlayCorner};
-use fractal_core::FractalParams;
+use fractal_core::math_overlay::{MathDetail, MathOverlay, OverlayCorner};
 
 use crate::app::FractalApp;
 use crate::overlay_burn::{BOX_ALPHA, TEXT_GRAY};
@@ -38,13 +37,13 @@ pub fn show_settings(ui: &mut egui::Ui, app: &mut FractalApp) {
     });
 }
 
-/// Draws the overlay for `params` over the viewport image at `rect`.
-pub fn paint(ui: &egui::Ui, rect: egui::Rect, params: &FractalParams, overlay: &MathOverlay) {
+/// Draws the overlay `lines` over the viewport image at `rect`.
+pub fn paint(ui: &egui::Ui, rect: egui::Rect, lines: Vec<String>, overlay: &MathOverlay) {
     let height = rect.height();
     let text_color = egui::Color32::from_gray(TEXT_GRAY);
     let painter = ui.painter_at(rect);
     let galley = painter.layout_no_wrap(
-        describe(params, overlay.detail).join("\n"),
+        lines.join("\n"),
         egui::FontId::monospace(overlay.text_px(height)),
         text_color,
     );

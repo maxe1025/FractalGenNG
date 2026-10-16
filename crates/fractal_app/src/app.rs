@@ -1,17 +1,21 @@
 use eframe::egui;
-use fractal_core::math_overlay::MathOverlay;
-use fractal_core::{Bookmark, FractalParams};
+use fractal_core::fractal3d::Params3D;
+use fractal_core::math_overlay::{self, MathOverlay};
+use fractal_core::{Bookmark, FractalParams, Palette};
 
 use crate::gpu::FractalRenderer;
 use crate::ui::bookmarks::BookmarksState;
 use crate::ui::export_panel::ExportState;
 use crate::ui::palette_editor::PaletteEditorState;
 use crate::ui::side_panel::reset_center;
-use crate::ui::{about, bookmarks, export_panel, palette_editor, side_panel, theme, viewport};
-use crate::view_state::{PropertiesTab, ViewState};
+use crate::ui::{
+    about, bookmarks, export_panel, palette_editor, side_panel, side_panel_3d, theme, viewport, viewport3d,
+};
+use crate::view_state::{Dimension, PropertiesTab, ViewState};
 
 pub struct FractalApp {
     pub params: FractalParams,
+    pub params3d: Params3D,
     pub view: ViewState,
     pub renderer: FractalRenderer,
     pub render_state: egui_wgpu::RenderState,
@@ -40,6 +44,7 @@ impl FractalApp {
 
         Self {
             params: FractalParams::default(),
+            params3d: Params3D::default(),
             view: ViewState::default(),
             renderer,
             render_state,
@@ -48,6 +53,38 @@ impl FractalApp {
             bookmarks: crate::presets::load_bookmarks(),
             bookmarks_ui: BookmarksState::default(),
             palette_ui: PaletteEditorState::default(),
+        }
+    }
+
+    pub fn is_3d(&self) -> bool {
+        self.view.dimension == Dimension::Three
+    }
+
+    /// The palette of whichever fractal (2D or 3D) is currently shown.
+    pub fn palette(&self) -> &Palette {
+        if self.is_3d() { &self.params3d.palette } else { &self.params.palette }
+    }
+
+    pub fn palette_mut(&mut self) -> &mut Palette {
+        if self.is_3d() { &mut self.params3d.palette } else { &mut self.params.palette }
+    }
+
+    /// The math overlay's lines for whatever the viewport currently shows.
+    pub fn overlay_lines(&self) -> Vec<String> {
+        if self.is_3d() {
+            math_overlay::describe_3d(&self.params3d, self.overlay.detail)
+        } else {
+            math_overlay::describe(&self.params, self.overlay.detail)
+        }
+    }
+
+    /// Back to the current fractal's default framing.
+    pub fn reset_view(&mut self) {
+        if self.is_3d() {
+            self.params3d.camera = self.params3d.formula.default_camera();
+        } else {
+            self.params.zoom = 1.0;
+            reset_center(self);
         }
     }
 }
@@ -61,7 +98,11 @@ impl eframe::App for FractalApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::viewport_bg()))
             .show(ui, |ui| {
-                viewport::show(ui, self);
+                if self.is_3d() {
+                    viewport3d::show(ui, self);
+                } else {
+                    viewport::show(ui, self);
+                }
             });
     }
 }
@@ -82,11 +123,15 @@ fn header_bar(ui: &mut egui::Ui, app: &mut FractalApp) {
                         .small(),
                 );
                 ui.separator();
-                ui.label(egui::RichText::new(app.params.kind.display_name()).color(theme::TEXT_WEAK));
+                ui.selectable_value(&mut app.view.dimension, Dimension::Two, "2D");
+                ui.selectable_value(&mut app.view.dimension, Dimension::Three, "3D");
+                ui.separator();
+                let name =
+                    if app.is_3d() { app.params3d.formula.display_name() } else { app.params.kind.display_name() };
+                ui.label(egui::RichText::new(name).color(theme::TEXT_WEAK));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Reset view").clicked() {
-                        app.params.zoom = 1.0;
-                        reset_center(app);
+                        app.reset_view();
                     }
                 });
             });
@@ -101,7 +146,8 @@ fn status_bar(ui: &mut egui::Ui, app: &FractalApp) {
         .frame(egui::Frame::new().fill(theme::header_bg()).inner_margin(egui::Margin::symmetric(10, 0)))
         .show(ui, |ui| {
             ui.horizontal_centered(|ui| {
-                ui.label(egui::RichText::new(viewport::status_text(app)).monospace().color(theme::TEXT_WEAK).size(11.5));
+                let status = if app.is_3d() { viewport3d::status_text(app) } else { viewport::status_text(app) };
+                ui.label(egui::RichText::new(status).monospace().color(theme::TEXT_WEAK).size(11.5));
             });
         });
 }
@@ -155,6 +201,7 @@ fn active_tab_content(ui: &mut egui::Ui, app: &mut FractalApp) {
     ui.label(egui::RichText::new(app.view.active_tab.label()).strong().size(16.0));
     ui.add_space(6.0);
     match app.view.active_tab {
+        PropertiesTab::Fractal if app.is_3d() => side_panel_3d::show(ui, app),
         PropertiesTab::Fractal => side_panel::show(ui, app),
         PropertiesTab::Palette => palette_editor::show(ui, app),
         PropertiesTab::Bookmarks => bookmarks::show(ui, app),

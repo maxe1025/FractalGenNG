@@ -28,7 +28,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
     let rect = response.rect;
 
     if app.overlay.show_in_viewport {
-        crate::ui::math_overlay::paint(ui, rect, &app.params, &app.overlay);
+        crate::ui::math_overlay::paint(ui, rect, app.overlay_lines(), &app.overlay);
     }
 
     if response.dragged() && rect.width() > 0.0 && rect.height() > 0.0 {

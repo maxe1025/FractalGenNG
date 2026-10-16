@@ -4,12 +4,32 @@
 pub struct ViewState {
     pub julia_seed_picker_active: bool,
     pub active_tab: PropertiesTab,
+    /// Whether the app is showing the 2D (`FractalApp::params`) or the 3D
+    /// (`FractalApp::params3d`) fractal. Both keep their state when switching.
+    pub dimension: Dimension,
+    /// 3D fly speed, in multiples of the camera's clearance per second.
+    pub fly_speed: f64,
+    /// When the 3D camera last moved; the viewport renders a coarse preview
+    /// until it has been still for a moment.
+    pub last_camera_motion: Option<std::time::Instant>,
 }
 
 impl Default for ViewState {
     fn default() -> Self {
-        Self { julia_seed_picker_active: false, active_tab: PropertiesTab::Fractal }
+        Self {
+            julia_seed_picker_active: false,
+            active_tab: PropertiesTab::Fractal,
+            dimension: Dimension::Two,
+            fly_speed: 1.0,
+            last_camera_motion: None,
+        }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dimension {
+    Two,
+    Three,
 }
 
 /// Which properties-panel section is currently shown, Blender-Properties-
