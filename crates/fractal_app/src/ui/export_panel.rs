@@ -1,13 +1,15 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use fractal_core::export::animation::{Easing, Keyframe, Timeline};
+use fractal_core::export::image_export::{self, ImageError};
 use fractal_core::hp::MAX_INTERACTIVE_ZOOM;
 use fractal_core::kinds::KindParam;
+use fractal_core::math_overlay::{self, MathOverlay};
 use fractal_core::FractalParams;
 
 use crate::app::FractalApp;
-use crate::ui::theme;
+use crate::ui::{math_overlay as math_overlay_ui, theme};
 
 pub struct AnimationJob {
     pub frames: Vec<FractalParams>,
@@ -20,6 +22,9 @@ pub struct AnimationJob {
     /// edit mid-render doesn't retroactively change what a completed job's
     /// "Stitch to video" step uses.
     pub fps: u32,
+    /// Snapshot of `FractalApp::overlay` at render-start time, for the same
+    /// reason as `fps`: every frame of one animation gets the same overlay.
+    pub overlay: MathOverlay,
 }
 
 /// An animation export that finished, kept around so the "Stitch to video"
@@ -70,6 +75,10 @@ impl Default for ExportState {
 }
 
 pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
+    theme::section(ui, "Math Overlay", |ui| {
+        math_overlay_ui::show_settings(ui, app);
+    });
+
     theme::section(ui, "Export Image", |ui| {
         ui.horizontal(|ui| {
             ui.label("Width:");
@@ -103,12 +112,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
                 render_w,
                 render_h,
             );
-            let result = fractal_core::export::image_export::save_png_supersampled(
-                render_w,
-                render_h,
-                &rgba,
-                app.export.width,
-                app.export.height,
+            let result = save_export_frame(
+                rgba,
+                (render_w, render_h),
+                (app.export.width, app.export.height),
+                &app.params,
+                &app.overlay,
                 &path,
             );
             app.export.status = Some(match result {
@@ -216,6 +225,7 @@ fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
                 height: app.export.height,
                 supersample: app.export.supersample,
                 fps: app.export.anim_fps,
+                overlay: app.overlay,
             });
             app.export.last_animation = None;
             app.export.ffmpeg_status = None;
@@ -467,6 +477,7 @@ fn run_animation_step(ui: &mut egui::Ui, app: &mut FractalApp) {
         height: u32,
         supersample: u32,
         fps: u32,
+        overlay: MathOverlay,
     }
 
     let step = app.export.anim_job.as_ref().and_then(|job| {
@@ -479,6 +490,7 @@ fn run_animation_step(ui: &mut egui::Ui, app: &mut FractalApp) {
             height: job.height,
             supersample: job.supersample,
             fps: job.fps,
+            overlay: job.overlay,
         })
     });
 
@@ -494,8 +506,13 @@ fn run_animation_step(ui: &mut egui::Ui, app: &mut FractalApp) {
         render_h,
     );
     let path = step.output_dir.join(format!("frame_{:05}.png", step.index));
-    let result = fractal_core::export::image_export::save_png_supersampled(
-        render_w, render_h, &rgba, step.width, step.height, &path,
+    let result = save_export_frame(
+        rgba,
+        (render_w, render_h),
+        (step.width, step.height),
+        &step.params,
+        &step.overlay,
+        &path,
     );
 
     if let Err(e) = result {
@@ -514,4 +531,23 @@ fn run_animation_step(ui: &mut egui::Ui, app: &mut FractalApp) {
         }
         ui.ctx().request_repaint();
     }
+}
+
+/// Downsamples a supersampled render to the export size, burns the math
+/// overlay into it if enabled (after downsampling, so the text stays crisp
+/// at the final resolution), and saves it as a PNG.
+fn save_export_frame(
+    rgba: Vec<u8>,
+    (render_w, render_h): (u32, u32),
+    (width, height): (u32, u32),
+    params: &FractalParams,
+    overlay: &MathOverlay,
+    path: &Path,
+) -> Result<(), ImageError> {
+    let mut rgba = image_export::downsample(render_w, render_h, rgba, width, height);
+    if overlay.burn_into_exports {
+        let lines = math_overlay::describe(params, overlay.detail);
+        crate::overlay_burn::burn(&mut rgba, width, height, &lines, overlay);
+    }
+    image_export::save_png(width, height, &rgba, path)
 }

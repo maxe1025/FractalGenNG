@@ -1,4 +1,5 @@
 use eframe::egui;
+use fractal_core::math_overlay::MathOverlay;
 use fractal_core::{Bookmark, FractalParams};
 
 use crate::gpu::FractalRenderer;
@@ -15,6 +16,7 @@ pub struct FractalApp {
     pub renderer: FractalRenderer,
     pub render_state: egui_wgpu::RenderState,
     pub export: ExportState,
+    pub overlay: MathOverlay,
     pub bookmarks: Vec<Bookmark>,
     pub bookmarks_ui: BookmarksState,
     pub palette_ui: PaletteEditorState,
@@ -42,6 +44,7 @@ impl FractalApp {
             renderer,
             render_state,
             export: ExportState::default(),
+            overlay: MathOverlay::default(),
             bookmarks: crate::presets::load_bookmarks(),
             bookmarks_ui: BookmarksState::default(),
             palette_ui: PaletteEditorState::default(),

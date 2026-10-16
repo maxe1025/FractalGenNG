@@ -27,6 +27,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
     let response = ui.add(egui::Image::new(sized).sense(egui::Sense::click_and_drag()));
     let rect = response.rect;
 
+    if app.overlay.show_in_viewport {
+        crate::ui::math_overlay::paint(ui, rect, &app.params, &app.overlay);
+    }
+
     if response.dragged() && rect.width() > 0.0 && rect.height() > 0.0 {
         let delta = response.drag_delta();
         let half_extent = 2.0 / app.params.zoom;

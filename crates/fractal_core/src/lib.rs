@@ -2,6 +2,7 @@ pub mod bookmark;
 pub mod export;
 pub mod hp;
 pub mod kinds;
+pub mod math_overlay;
 pub mod orbit;
 pub mod palette;
 pub mod params;

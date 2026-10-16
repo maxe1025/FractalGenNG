@@ -111,6 +111,15 @@ impl HpComplex {
     pub fn square(&self) -> Self {
         self.mul(self)
     }
+
+    /// Both components as plain positional decimal strings (`"-0.7436"`),
+    /// rounded to `decimals` fractional digits at full precision, with
+    /// trailing zeros trimmed. For display only — unlike [`Self::to_f64_pair`]
+    /// it never loses the digits a deep zoom depends on, as long as
+    /// `decimals` asks for them.
+    pub fn to_fixed_decimal_pair(&self, decimals: usize) -> (String, String) {
+        (fixed_decimal_string(&self.re, decimals), fixed_decimal_string(&self.im, decimals))
+    }
 }
 
 impl PartialEq for HpComplex {
@@ -145,6 +154,65 @@ fn decimal_string(value: &BigFloat, rm: RoundingMode) -> Option<String> {
     s.push('e');
     s.push_str(&exponent.to_string());
     Some(s)
+}
+
+fn fixed_decimal_string(value: &BigFloat, decimals: usize) -> String {
+    let mut cc = Consts::new().expect("astro-float constants cache allocation");
+    match value.convert_to_radix(Radix::Dec, RoundingMode::ToEven, &mut cc) {
+        Ok((sign, digits, exponent)) => {
+            round_to_fixed_decimals(sign == Sign::Neg, &digits, i64::from(exponent), decimals)
+        }
+        Err(_) => "0".to_string(),
+    }
+}
+
+/// Formats `0.d₁d₂d₃… × 10^exponent` (the shape `convert_to_radix` returns)
+/// positionally, rounded half-up to `decimals` fractional digits, trailing
+/// zeros trimmed. A value that rounds to zero is printed unsigned.
+fn round_to_fixed_decimals(negative: bool, digits: &[u8], exponent: i64, decimals: usize) -> String {
+    let int_len = exponent.max(0) as usize;
+    let mut int_digits: Vec<u8> = (0..int_len).map(|i| digits.get(i).copied().unwrap_or(0)).collect();
+    // Leading fractional zeros beyond `decimals + 1` can't affect the
+    // rounded result, so don't materialize all of them for tiny values.
+    let lead_zeros = ((-exponent).max(0) as usize).min(decimals + 1);
+    let frac_all: Vec<u8> =
+        std::iter::repeat_n(0, lead_zeros).chain(digits.iter().skip(int_len).copied()).take(decimals + 1).collect();
+    let round_up = frac_all.get(decimals).is_some_and(|&d| d >= 5);
+    let mut frac: Vec<u8> = frac_all.into_iter().take(decimals).collect();
+
+    if round_up {
+        let mut carry = true;
+        for d in frac.iter_mut().rev().chain(int_digits.iter_mut().rev()) {
+            if *d == 9 {
+                *d = 0;
+            } else {
+                *d += 1;
+                carry = false;
+                break;
+            }
+        }
+        if carry {
+            int_digits.insert(0, 1);
+        }
+    }
+    while frac.last() == Some(&0) {
+        frac.pop();
+    }
+    if int_digits.is_empty() {
+        int_digits.push(0);
+    }
+
+    let is_zero = int_digits.iter().chain(frac.iter()).all(|&d| d == 0);
+    let mut s = String::with_capacity(int_digits.len() + frac.len() + 2);
+    if negative && !is_zero {
+        s.push('-');
+    }
+    s.extend(int_digits.iter().map(|&d| (b'0' + d) as char));
+    if !frac.is_empty() {
+        s.push('.');
+        s.extend(frac.iter().map(|&d| (b'0' + d) as char));
+    }
+    s
 }
 
 impl Serialize for HpComplex {
@@ -216,6 +284,32 @@ mod tests {
         let back: HpComplex = ron::from_str(&ron).expect("deserialize");
         assert_eq!(back.precision_bits(), 256);
         assert_eq!(back, hp);
+    }
+
+    #[test]
+    fn fixed_decimal_pair_rounds_and_trims() {
+        let hp = HpComplex::from_f64_pair(-0.75, 0.131_825_904_205_33, 128);
+        assert_eq!(hp.to_fixed_decimal_pair(4), ("-0.75".to_string(), "0.1318".to_string()));
+        assert_eq!(hp.to_fixed_decimal_pair(6), ("-0.75".to_string(), "0.131826".to_string()));
+    }
+
+    #[test]
+    fn fixed_decimal_rounding_carries_into_integer_part() {
+        // 0.9996 at 3 decimals -> 1.0 -> "1"
+        assert_eq!(round_to_fixed_decimals(false, &[9, 9, 9, 6], 0, 3), "1");
+        // 12.345 at 2 decimals -> "12.35"
+        assert_eq!(round_to_fixed_decimals(true, &[1, 2, 3, 4, 5], 2, 2), "-12.35");
+        // 0.00004 at 3 decimals rounds to zero, printed unsigned
+        assert_eq!(round_to_fixed_decimals(true, &[4], -4, 3), "0");
+        assert_eq!(round_to_fixed_decimals(false, &[], 0, 3), "0");
+    }
+
+    #[test]
+    fn fixed_decimal_pair_keeps_digits_beyond_f64() {
+        // 0.5 + 1e-30: only representable at high precision.
+        let hp = HpComplex::from_f64_pair(0.5, 0.0, 256).add(&HpComplex::from_f64_pair(1.0e-30, 0.0, 256));
+        let (re, _) = hp.to_fixed_decimal_pair(32);
+        assert_eq!(re, format!("0.5{}1", "0".repeat(28)));
     }
 
     #[test]
