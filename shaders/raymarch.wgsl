@@ -1,4 +1,5 @@
-// Ray-marched 3D fractals (Mandelbulb, Mandelbox) via distance estimation.
+// Ray-marched 3D fractals (Mandelbulb, Mandelbox, Menger/KIFS,
+// pseudo-Kleinian; optionally sphere-inverted) via distance estimation.
 // One compute invocation per output pixel: march the pixel's ray by the
 // distance estimate (DE) until it is within one pixel footprint of the
 // surface, then shade the hit with a headlight, a key light and ambient
@@ -13,19 +14,33 @@ struct RayUniforms {
     cam_right: vec4<f32>,   // xyz, detail (pixels)
     cam_up: vec4<f32>,      // xyz, max ray distance
     cam_forward: vec4<f32>, // xyz, step factor
-    // Mandelbulb: (power, -, -, fog_distance)
-    // Mandelbox:  (scale, min_radius, fixed_radius, fog_distance)
-    // fog_distance is in world units; 0 disables fog.
-    formula: vec4<f32>,
+    // Formula parameters (params_a | params_b):
+    //   Mandelbulb:      (power, -, -, -)              | -
+    //   Mandelbox:       (scale, min_radius, fixed_radius, -) | -
+    //   KIFS:            (scale, offset.xyz)           | (rot_x, rot_z radians, -, -)
+    //   Pseudo-Kleinian: (box_size.xyz, size)          | (thickness, -, -, -)
+    params_a: vec4<f32>,
+    params_b: vec4<f32>,
+    inversion: vec4<f32>,   // center.xyz, radius (0 = no inversion)
+    // fog_distance (world units, 0 = off), cycle_count,
+    // inversion free radius (see Inversion::free_radius), unused
+    misc: vec4<f32>,
     background: vec4<f32>,
-    counts: vec4<u32>,      // formula_id (0=Mandelbulb,1=Mandelbox), max_iterations, max_steps, stop_count
-    coloring: vec4<f32>,    // cycle_count, unused, unused, unused
+    // formula_id (0=Mandelbulb,1=Mandelbox,2=KIFS,3=Pseudo-Kleinian),
+    // max_iterations, max_steps, stop_count
+    counts: vec4<u32>,
 };
 
 @group(0) @binding(0) var<uniform> u: RayUniforms;
 @group(0) @binding(3) var output_tex: texture_storage_2d<rgba8unorm, write>;
 
 const KEY_LIGHT_DIR: vec3<f32> = vec3<f32>(0.48, 0.78, -0.40);
+
+// KIFS per-iteration rotation (rows of Rz * Rx), built once per invocation
+// in main() rather than once per DE evaluation.
+var<private> kifs_rot0: vec3<f32>;
+var<private> kifs_rot1: vec3<f32>;
+var<private> kifs_rot2: vec3<f32>;
 
 // Returns (distance estimate, orbit trap = min |z|^2).
 fn de_mandelbulb(p: vec3<f32>, power: f32, max_iterations: u32) -> vec2<f32> {
@@ -75,11 +90,81 @@ fn de_mandelbox(p: vec3<f32>, scale: f32, min_radius: f32, fixed_radius: f32, ma
     return vec2<f32>(length(z) / abs(dr), trap);
 }
 
-fn estimate(p: vec3<f32>) -> vec2<f32> {
-    if (u.counts.x == 0u) {
-        return de_mandelbulb(p, u.formula.x, u.counts.y);
+fn unit_box_distance(p: vec3<f32>) -> f32 {
+    let q = abs(p) - vec3<f32>(1.0);
+    return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
+}
+
+fn de_kifs(p: vec3<f32>, scale: f32, offset: vec3<f32>, max_iterations: u32) -> vec2<f32> {
+    var z = p;
+    var stretch = 1.0;
+    var trap = 1e20;
+    for (var i = 0u; i < max_iterations; i = i + 1u) {
+        // Fold into the octant x >= y >= z >= 0.
+        z = abs(z);
+        if (z.x < z.y) { z = z.yxz; }
+        if (z.x < z.z) { z = z.zyx; }
+        if (z.y < z.z) { z = z.xzy; }
+        z = vec3<f32>(dot(kifs_rot0, z), dot(kifs_rot1, z), dot(kifs_rot2, z));
+        z = z * scale - offset * (scale - 1.0);
+        // Keep the middle slab (the Menger sponge's face-center hole).
+        if (z.z < -0.5 * offset.z * (scale - 1.0)) {
+            z.z = z.z + offset.z * (scale - 1.0);
+        }
+        stretch = stretch * scale;
+        trap = min(trap, dot(z, z));
     }
-    return de_mandelbox(p, u.formula.x, u.formula.y, u.formula.z, u.counts.y);
+    return vec2<f32>(unit_box_distance(z) / stretch, trap);
+}
+
+fn de_pseudo_kleinian(p: vec3<f32>, box_size: vec3<f32>, size: f32, thickness: f32, max_iterations: u32) -> vec2<f32> {
+    var z = p;
+    var stretch = 1.0;
+    var trap = 1e20;
+    for (var i = 0u; i < max_iterations; i = i + 1u) {
+        let previous = z;
+        z = 2.0 * clamp(z, -box_size, box_size) - z;
+        let r2 = max(dot(z, z), 1e-30);
+        trap = min(trap, r2);
+        let k = max(size / r2, 1.0);
+        z = z * k;
+        stretch = stretch * k;
+        // Once a fold changes nothing, every later one won't either.
+        if (all(z == previous)) {
+            break;
+        }
+    }
+    let rxy = length(z.xy);
+    let de = max(rxy - thickness, abs(rxy * z.z) / max(length(z), 1e-30));
+    return vec2<f32>(de / stretch, trap);
+}
+
+fn formula_estimate(p: vec3<f32>) -> vec2<f32> {
+    let a = u.params_a;
+    let iterations = u.counts.y;
+    switch u.counts.x {
+        case 0u: { return de_mandelbulb(p, a.x, iterations); }
+        case 1u: { return de_mandelbox(p, a.x, a.y, a.z, iterations); }
+        case 2u: { return de_kifs(p, a.x, a.yzw, iterations); }
+        default: { return de_pseudo_kleinian(p, a.xyz, a.w, u.params_b.x, iterations); }
+    }
+}
+
+// The formula's estimate, in sphere-inverted space if an inversion is set
+// (mirrors Inversion::estimate).
+fn estimate(p: vec3<f32>) -> vec2<f32> {
+    let radius = u.inversion.w;
+    if (radius <= 0.0) {
+        return formula_estimate(p);
+    }
+    let center = u.inversion.xyz;
+    let d = p - center;
+    let r2 = max(dot(d, d), 1e-30);
+    let r = sqrt(r2);
+    let rr = radius * radius;
+    let e = formula_estimate(center + d * (rr / r2));
+    let de = max(r2 * e.x / (rr + r * abs(e.x)), u.misc.z - r);
+    return vec2<f32>(de, e.y);
 }
 
 fn de(p: vec3<f32>) -> f32 {
@@ -120,12 +205,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let height = f32(dims.y);
     let aspect = width / height;
 
+    // Rz(b) * Rx(a), as rows (mirrors fractal3d::kifs_rotation).
+    let sa = sin(u.params_b.x);
+    let ca = cos(u.params_b.x);
+    let sb = sin(u.params_b.y);
+    let cb = cos(u.params_b.y);
+    kifs_rot0 = vec3<f32>(cb, -sb * ca, sb * sa);
+    kifs_rot1 = vec3<f32>(sb, cb * ca, -cb * sa);
+    kifs_rot2 = vec3<f32>(0.0, sa, ca);
+
     let ro = u.cam_pos.xyz;
     let tan_half_fov = u.cam_pos.w;
     let detail = u.cam_right.w;
     let max_distance = u.cam_up.w;
     let step_factor = u.cam_forward.w;
-    let fog_distance = u.formula.w;
+    let fog_distance = u.misc.x;
     let max_steps = u.counts.z;
 
     let px = (f32(gid.x) + 0.5) / width * 2.0 - 1.0;
@@ -158,7 +252,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (hit) {
         let p = ro + dir * t;
         let n = normal_at(p, max(eps * 2.0, 1e-6));
-        let base = sample_palette(log2(1.0 + trap) * u.coloring.x * 0.25, u.counts.w).rgb;
+        let base = sample_palette(log2(1.0 + trap) * u.misc.y * 0.25, u.counts.w).rgb;
         let headlight = max(dot(n, -dir), 0.0);
         let key = max(dot(n, normalize(KEY_LIGHT_DIR)), 0.0);
         let ao = ambient_occlusion(p, n, max(t * 0.015, eps * 2.0));

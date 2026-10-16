@@ -17,6 +17,9 @@ const BULB_BAILOUT: f64 = 2.0;
 /// Overflow guard for the Mandelbox iteration — far outside anything a
 /// visible point reaches, so it doesn't change the DE in practice.
 const BOX_BAILOUT_SQ: f64 = 1.0e8;
+/// Ray-length cap for formulas that fill all of space (the pseudo-Kleinian),
+/// and for inverted space, whose fractal reaches out to infinity.
+const UNBOUNDED_RADIUS: f64 = 1000.0;
 
 /// Which 3D distance-estimated formula to render. The GPU shader dispatches
 /// on `shader_id()`.
@@ -28,16 +31,32 @@ pub enum Formula3D {
     /// Negative scales (around −1.5) give the cave-like interiors best suited
     /// to flying through.
     Mandelbox { scale: f64, min_radius: f64, fixed_radius: f64 },
+    /// A kaleidoscopic IFS: fold into one octant, sort the coordinates,
+    /// rotate, then scale away from `offset`; the base shape is a cube. The
+    /// defaults (scale 3, offset 1, no rotation) give exactly the Menger
+    /// sponge — a grid of square corridors — and the rotation angles twist
+    /// it into ornamental architecture.
+    Kifs { scale: f64, offset: [f64; 3], rotation_degrees: [f64; 2] },
+    /// Knighty's pseudo-Kleinian: box folds plus a sphere inversion that
+    /// only ever shrinks, tiling all of space with organic tunnels — the
+    /// camera is always inside it.
+    PseudoKleinian { box_size: [f64; 3], size: f64, thickness: f64 },
 }
 
 pub const MANDELBULB_DEFAULT: Formula3D = Formula3D::Mandelbulb { power: 8.0 };
 pub const MANDELBOX_DEFAULT: Formula3D = Formula3D::Mandelbox { scale: -1.5, min_radius: 0.5, fixed_radius: 1.0 };
+pub const KIFS_DEFAULT: Formula3D =
+    Formula3D::Kifs { scale: 3.0, offset: [1.0, 1.0, 1.0], rotation_degrees: [0.0, 0.0] };
+pub const PSEUDO_KLEINIAN_DEFAULT: Formula3D =
+    Formula3D::PseudoKleinian { box_size: [0.92436, 0.90756, 0.92436], size: 1.0, thickness: 0.3 };
 
 impl Formula3D {
     pub fn shader_id(self) -> u32 {
         match self {
             Formula3D::Mandelbulb { .. } => 0,
             Formula3D::Mandelbox { .. } => 1,
+            Formula3D::Kifs { .. } => 2,
+            Formula3D::PseudoKleinian { .. } => 3,
         }
     }
 
@@ -45,6 +64,8 @@ impl Formula3D {
         match self {
             Formula3D::Mandelbulb { .. } => "Mandelbulb",
             Formula3D::Mandelbox { .. } => "Mandelbox",
+            Formula3D::Kifs { .. } => "Menger / KIFS",
+            Formula3D::PseudoKleinian { .. } => "Pseudo-Kleinian",
         }
     }
 
@@ -57,21 +78,35 @@ impl Formula3D {
                 let s = scale.abs();
                 // The Mandelbox fits in a cube of half-size 2(|s|+1)/(|s|−1);
                 // that blows up as |s| → 1, where the set itself does too.
-                if s > 1.01 { (2.0 * (s + 1.0) / (s - 1.0) * 3f64.sqrt()).min(1000.0) } else { 1000.0 }
+                if s > 1.01 {
+                    (2.0 * (s + 1.0) / (s - 1.0) * 3f64.sqrt()).min(UNBOUNDED_RADIUS)
+                } else {
+                    UNBOUNDED_RADIUS
+                }
             }
+            // The attractor stays within the offset's reach of the origin;
+            // doubled for the slack rotation adds.
+            Formula3D::Kifs { offset, .. } => 2.0 * length(offset).max(1.0),
+            Formula3D::PseudoKleinian { .. } => UNBOUNDED_RADIUS,
         }
     }
 
-    /// A camera placed outside the fractal, looking at its center.
+    /// A camera with a good first view: outside the bounded fractals looking
+    /// at their center (the KIFS straight down its central corridor), inside
+    /// a tunnel for the space-filling pseudo-Kleinian.
     pub fn default_camera(self) -> Camera3D {
-        let distance = match self {
-            Formula3D::Mandelbulb { .. } => 2.6,
+        let position = match self {
+            Formula3D::Mandelbulb { .. } => [0.0, 0.0, -2.6],
             // Positive scales fill the whole 2(s+1)/(s−1) cube; negative
             // ones fold back into a body only about ±2 wide.
-            Formula3D::Mandelbox { scale, .. } if scale > 1.01 => 2.0 * (scale + 1.0) / (scale - 1.0) * 1.8,
-            Formula3D::Mandelbox { .. } => 4.4,
+            Formula3D::Mandelbox { scale, .. } if scale > 1.01 => {
+                [0.0, 0.0, -2.0 * (scale + 1.0) / (scale - 1.0) * 1.8]
+            }
+            Formula3D::Mandelbox { .. } => [0.0, 0.0, -4.4],
+            Formula3D::Kifs { offset, .. } => [0.0, 0.0, -3.5 * offset[2].abs().max(0.5)],
+            Formula3D::PseudoKleinian { .. } => PSEUDO_KLEINIAN_START,
         };
-        Camera3D { position: [0.0, 0.0, -distance], yaw: 0.0, pitch: 0.0, fov_y_degrees: 60.0 }
+        Camera3D { position, yaw: 0.0, pitch: 0.0, fov_y_degrees: 60.0 }
     }
 
     /// `(distance estimate, orbit trap)` at `p`. The orbit trap is the
@@ -82,12 +117,76 @@ impl Formula3D {
             Formula3D::Mandelbox { scale, min_radius, fixed_radius } => {
                 mandelbox_de(p, scale, min_radius, fixed_radius, max_iterations)
             }
+            Formula3D::Kifs { scale, offset, rotation_degrees } => {
+                kifs_de(p, scale, offset, kifs_rotation(rotation_degrees), max_iterations)
+            }
+            Formula3D::PseudoKleinian { box_size, size, thickness } => {
+                pseudo_kleinian_de(p, box_size, size, thickness, max_iterations)
+            }
         }
     }
 
     pub fn distance_estimate(self, p: [f64; 3], max_iterations: u32) -> f64 {
         self.estimate(p, max_iterations).0
     }
+}
+
+/// A free spot inside one of the pseudo-Kleinian's tunnels.
+const PSEUDO_KLEINIAN_START: [f64; 3] = [0.9, 0.0, 0.3];
+
+/// Sphere inversion of space: `p → center + radius²·(p − center)/|p − center|²`.
+/// With `center` inside the fractal's solid, the infinite space around the
+/// fractal maps to a closed cave around `center`, walled in by the fractal's
+/// surface turned inside out.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Inversion {
+    pub center: [f64; 3],
+    pub radius: f64,
+}
+
+impl Inversion {
+    /// Radius of the ball around `center` that the inverted fractal can't
+    /// reach: the whole fractal lies within `|center| + bounding radius` of
+    /// the center, so its image lies at least `R²` over that away.
+    pub fn free_radius(self, formula: Formula3D) -> f64 {
+        self.radius * self.radius / (length(self.center) + formula.bounding_radius())
+    }
+
+    /// `(distance estimate, orbit trap)` at `p` in inverted space: the
+    /// formula's estimate at the inverted point, scaled back by the
+    /// inversion's local stretch (`r²·DE / (R² + r·DE)`, with `r` the
+    /// distance from the center). That estimate degenerates to `r/2` near
+    /// the center (which maps to infinity), stalling rays aimed at it, so
+    /// it is floored by the exact clearance [`Self::free_radius`] − `r`.
+    pub fn estimate(self, formula: Formula3D, p: [f64; 3], max_iterations: u32) -> (f64, f64) {
+        let d = sub(p, self.center);
+        let r2 = dot(d, d).max(1e-30);
+        let r = r2.sqrt();
+        let rr = self.radius * self.radius;
+        let inverted = [
+            self.center[0] + d[0] * rr / r2,
+            self.center[1] + d[1] * rr / r2,
+            self.center[2] + d[2] * rr / r2,
+        ];
+        let (de, trap) = formula.estimate(inverted, max_iterations);
+        let de = (r2 * de / (rr + r * de.abs())).max(self.free_radius(formula) - r);
+        (de, trap)
+    }
+
+    /// Where the camera starts inside the cave: a little behind the
+    /// center, looking across it (the center itself maps to infinity).
+    pub fn default_camera(self) -> Camera3D {
+        let mut position = self.center;
+        position[2] -= 0.3 * self.radius;
+        Camera3D { position, yaw: 0.0, pitch: 0.0, fov_y_degrees: 75.0 }
+    }
+}
+
+/// Per-iteration KIFS rotation, as matrix rows: `Rz(z°) · Rx(x°)`.
+pub fn kifs_rotation(rotation_degrees: [f64; 2]) -> [[f64; 3]; 3] {
+    let (sa, ca) = rotation_degrees[0].to_radians().sin_cos();
+    let (sb, cb) = rotation_degrees[1].to_radians().sin_cos();
+    [[cb, -sb * ca, sb * sa], [sb, cb * ca, -cb * sa], [0.0, sa, ca]]
 }
 
 fn mandelbulb_de(p: [f64; 3], power: f64, max_iterations: u32) -> (f64, f64) {
@@ -142,6 +241,66 @@ fn mandelbox_de(p: [f64; 3], scale: f64, min_radius: f64, fixed_radius: f64, max
         }
     }
     (length(z) / dr.abs(), trap)
+}
+
+fn kifs_de(p: [f64; 3], scale: f64, offset: [f64; 3], rotation: [[f64; 3]; 3], max_iterations: u32) -> (f64, f64) {
+    let mut z = p;
+    let mut stretch = 1.0;
+    let mut trap = f64::MAX;
+    for _ in 0..max_iterations {
+        // Fold into the octant x ≥ y ≥ z ≥ 0.
+        z = z.map(f64::abs);
+        if z[0] < z[1] {
+            z.swap(0, 1);
+        }
+        if z[0] < z[2] {
+            z.swap(0, 2);
+        }
+        if z[1] < z[2] {
+            z.swap(1, 2);
+        }
+        z = rotation.map(|row| dot(row, z));
+        for (zc, oc) in z.iter_mut().zip(offset) {
+            *zc = *zc * scale - oc * (scale - 1.0);
+        }
+        // Keep the middle slab (the Menger sponge's face-center hole).
+        if z[2] < -0.5 * offset[2] * (scale - 1.0) {
+            z[2] += offset[2] * (scale - 1.0);
+        }
+        stretch *= scale;
+        trap = trap.min(dot(z, z));
+    }
+    (unit_box_distance(z) / stretch, trap)
+}
+
+/// Signed distance from `p` to the cube [−1, 1]³.
+fn unit_box_distance(p: [f64; 3]) -> f64 {
+    let q = p.map(|c| c.abs() - 1.0);
+    length(q.map(|c| c.max(0.0))) + q[0].max(q[1]).max(q[2]).min(0.0)
+}
+
+fn pseudo_kleinian_de(p: [f64; 3], box_size: [f64; 3], size: f64, thickness: f64, max_iterations: u32) -> (f64, f64) {
+    let mut z = p;
+    let mut stretch = 1.0;
+    let mut trap = f64::MAX;
+    for _ in 0..max_iterations {
+        let previous = z;
+        for (zc, b) in z.iter_mut().zip(box_size) {
+            *zc = 2.0 * zc.clamp(-b, b) - *zc;
+        }
+        let r2 = dot(z, z).max(1e-30);
+        trap = trap.min(r2);
+        let k = (size / r2).max(1.0);
+        z = z.map(|c| c * k);
+        stretch *= k;
+        // Once a fold changes nothing, every later one won't either.
+        if z == previous {
+            break;
+        }
+    }
+    let rxy = (z[0] * z[0] + z[1] * z[1]).sqrt();
+    let de = (rxy - thickness).max((rxy * z[2]).abs() / length(z).max(1e-30));
+    (de / stretch, trap)
 }
 
 /// A fly camera: position plus yaw (around world +Y) and pitch (up/down),
@@ -208,6 +367,10 @@ pub struct Params3D {
     /// The palette colors the surface by orbit trap; its `interior_color`
     /// is the background/fog color, and `distance_shading` is unused.
     pub palette: Palette,
+    /// Sphere inversion applied to all of space before the formula; `None`
+    /// renders the fractal as is.
+    #[serde(default)]
+    pub inversion: Option<Inversion>,
 }
 
 impl Params3D {
@@ -215,26 +378,59 @@ impl Params3D {
         Self {
             formula,
             camera: formula.default_camera(),
-            max_iterations: 12,
+            max_iterations: match formula {
+                // Every KIFS level is 3× finer; f32 can't resolve much past 8.
+                Formula3D::Kifs { .. } => 8,
+                Formula3D::PseudoKleinian { .. } => 8,
+                _ => 12,
+            },
             max_steps: 300,
             detail: 1.0,
             step_factor: match formula {
-                Formula3D::Mandelbulb { .. } => 0.8,
-                Formula3D::Mandelbox { .. } => 0.9,
+                Formula3D::Mandelbulb { .. } | Formula3D::PseudoKleinian { .. } => 0.8,
+                Formula3D::Mandelbox { .. } | Formula3D::Kifs { .. } => 0.9,
             },
             fog_distance: 100.0,
             palette: Palette::ocean(),
+            inversion: None,
+        }
+    }
+
+    /// `(distance estimate, orbit trap)` at `p`, in inverted space if an
+    /// inversion is set.
+    pub fn estimate(&self, p: [f64; 3]) -> (f64, f64) {
+        match self.inversion {
+            Some(inversion) => inversion.estimate(self.formula, p, self.max_iterations),
+            None => self.formula.estimate(p, self.max_iterations),
+        }
+    }
+
+    /// Turns inversion on (with the camera moved into the resulting cave) or
+    /// off (with the camera back at the formula's default view).
+    pub fn set_inversion(&mut self, inversion: Option<Inversion>) {
+        self.inversion = inversion;
+        self.camera = self.default_camera();
+    }
+
+    /// The default view for the current formula and inversion.
+    pub fn default_camera(&self) -> Camera3D {
+        match self.inversion {
+            Some(inversion) => inversion.default_camera(),
+            None => self.formula.default_camera(),
         }
     }
 
     /// DE at the camera — its clearance to the surface.
     pub fn camera_clearance(&self) -> f64 {
-        self.formula.distance_estimate(self.camera.position, self.max_iterations)
+        self.estimate(self.camera.position).0
     }
 
-    /// Furthest a ray needs to march: past the far side of the bounding sphere.
+    /// Furthest a ray needs to march: past the far side of the bounding
+    /// sphere — or a fixed cap in inverted space, where the fractal reaches
+    /// out to infinity.
     pub fn max_distance(&self) -> f64 {
-        length(self.camera.position) + 2.0 * self.formula.bounding_radius()
+        let radius = if self.inversion.is_some() { UNBOUNDED_RADIUS } else { self.formula.bounding_radius() };
+        length(self.camera.position) + 2.0 * radius
     }
 
     /// Moves the camera by `delta` (world units) without letting it fly into
@@ -266,6 +462,10 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 pub(crate) fn length(a: [f64; 3]) -> f64 {
     dot(a, a).sqrt()
+}
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -305,12 +505,72 @@ mod tests {
         assert_eq!(cam.pitch, MAX_PITCH);
     }
 
+    const ALL_DEFAULTS: [Formula3D; 4] = [MANDELBULB_DEFAULT, MANDELBOX_DEFAULT, KIFS_DEFAULT, PSEUDO_KLEINIAN_DEFAULT];
+
     #[test]
-    fn default_cameras_start_outside_the_fractal_with_room_to_move() {
-        for formula in [MANDELBULB_DEFAULT, MANDELBOX_DEFAULT] {
+    fn default_cameras_start_in_free_space_with_room_to_move() {
+        for formula in ALL_DEFAULTS {
             let params = Params3D::new(formula);
             assert!(params.camera_clearance() > 0.1, "{}: {}", formula.display_name(), params.camera_clearance());
         }
+    }
+
+    #[test]
+    fn inverted_default_cameras_start_inside_a_cave() {
+        let inversion = Inversion { center: [0.0; 3], radius: 1.0 };
+        for formula in [MANDELBULB_DEFAULT, MANDELBOX_DEFAULT] {
+            let mut params = Params3D::new(formula);
+            params.set_inversion(Some(inversion));
+            assert!(params.camera_clearance() > 0.01, "{}: {}", formula.display_name(), params.camera_clearance());
+            // Walled in: a ray in any axis direction hits the surface soon.
+            for dir in [[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]] {
+                let mut t = 0.0;
+                let hit = (0..1000).any(|_| {
+                    let p = params.camera.position;
+                    let de = params.estimate([p[0] + dir[0] * t, p[1] + dir[1] * t, p[2] + dir[2] * t]).0;
+                    t += de * 0.9;
+                    de < 1e-5
+                });
+                assert!(hit && t < 5.0, "{}: no wall along {dir:?}", formula.display_name());
+            }
+        }
+    }
+
+    #[test]
+    fn inversion_center_maps_to_free_space() {
+        // The center is the image of infinity: a ray aimed straight through
+        // it must not stall there.
+        let inversion = Inversion { center: [0.0; 3], radius: 1.0 };
+        let (de, _) = inversion.estimate(MANDELBULB_DEFAULT, [0.0; 3], 12);
+        assert!(de > 0.3, "{de}");
+        assert!((inversion.free_radius(MANDELBULB_DEFAULT) - 1.0 / 1.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn menger_sponge_de_matches_known_distances() {
+        // At the center of the sponge's corridor cross the nearest solid
+        // edge (1/3, 1/3, 0) is √2/3 away.
+        let de = KIFS_DEFAULT.distance_estimate([0.0; 3], 8);
+        assert!((de - 2f64.sqrt() / 3.0).abs() < 1e-9, "{de}");
+        // Inside a first-level edge cube: solid.
+        assert!(KIFS_DEFAULT.distance_estimate([0.5, 0.5, 0.0], 8) <= 0.0);
+        // Far outside, facing a face whose center is a hole: the nearest
+        // solid point is (1, 1/3, 1/3), and a DE must never exceed that.
+        let far = KIFS_DEFAULT.distance_estimate([5.0, 0.0, 0.0], 8);
+        let true_distance = (16.0f64 + 2.0 / 9.0).sqrt();
+        assert!(far > 3.9 && far <= true_distance, "{far} vs {true_distance}");
+    }
+
+    #[test]
+    fn kifs_rotation_is_orthonormal() {
+        let m = kifs_rotation([23.0, -71.0]);
+        for i in 0..3 {
+            for j in 0..3 {
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!((dot(m[i], m[j]) - expected).abs() < 1e-12);
+            }
+        }
+        assert_eq!(kifs_rotation([0.0, 0.0]), [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]);
     }
 
     #[test]

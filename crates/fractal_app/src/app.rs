@@ -81,7 +81,7 @@ impl FractalApp {
     /// Back to the current fractal's default framing.
     pub fn reset_view(&mut self) {
         if self.is_3d() {
-            self.params3d.camera = self.params3d.formula.default_camera();
+            self.params3d.camera = self.params3d.default_camera();
         } else {
             self.params.zoom = 1.0;
             reset_center(self);

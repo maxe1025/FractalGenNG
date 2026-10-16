@@ -118,15 +118,18 @@ pub struct RayUniforms {
     pub cam_up: [f32; 4],
     /// (forward.xyz, step factor)
     pub cam_forward: [f32; 4],
-    /// Mandelbulb: (power, 0, 0, fog distance); Mandelbox: (scale,
-    /// min_radius, fixed_radius, fog distance). Fog distance is in world
-    /// units, 0 = off.
-    pub formula: [f32; 4],
+    /// Formula parameters; the per-formula layout is documented on the
+    /// shader's `RayUniforms`.
+    pub params_a: [f32; 4],
+    pub params_b: [f32; 4],
+    /// (center.xyz, radius); radius 0 = no inversion.
+    pub inversion: [f32; 4],
+    /// (fog distance in world units — 0 = off, cycle_count, inversion free
+    /// radius, unused)
+    pub misc: [f32; 4],
     pub background: [f32; 4],
     /// (formula_id, max_iterations, max_steps, stop_count)
     pub counts: [u32; 4],
-    /// (cycle_count, unused, unused, unused)
-    pub coloring: [f32; 4],
 }
 
 impl RayUniforms {
@@ -137,11 +140,22 @@ impl RayUniforms {
         // `fog_distance` is relative to the camera's clearance (see
         // `Params3D::fog_distance`); the shader wants world units.
         let fog = if params.fog_distance > 0.0 { params.fog_distance * params.camera_clearance().max(1e-9) } else { 0.0 };
-        let formula = match params.formula {
-            Formula3D::Mandelbulb { power } => [power as f32, 0.0, 0.0, fog as f32],
+        let (params_a, params_b) = match params.formula {
+            Formula3D::Mandelbulb { power } => ([power, 0.0, 0.0, 0.0], [0.0; 4]),
             Formula3D::Mandelbox { scale, min_radius, fixed_radius } => {
-                [scale as f32, min_radius as f32, fixed_radius as f32, fog as f32]
+                ([scale, min_radius, fixed_radius, 0.0], [0.0; 4])
             }
+            Formula3D::Kifs { scale, offset, rotation_degrees } => (
+                [scale, offset[0], offset[1], offset[2]],
+                [rotation_degrees[0].to_radians(), rotation_degrees[1].to_radians(), 0.0, 0.0],
+            ),
+            Formula3D::PseudoKleinian { box_size, size, thickness } => {
+                ([box_size[0], box_size[1], box_size[2], size], [thickness, 0.0, 0.0, 0.0])
+            }
+        };
+        let (inversion, free_radius) = match params.inversion {
+            Some(inv) => (vec(inv.center, inv.radius), inv.free_radius(params.formula)),
+            None => ([0.0; 4], 0.0),
         };
         let (_, _, stop_count) = params.palette.to_gpu_stops();
         let bg = params.palette.interior_color;
@@ -150,10 +164,12 @@ impl RayUniforms {
             cam_right: vec(cam.right(), params.detail),
             cam_up: vec(cam.up(), params.max_distance()),
             cam_forward: vec(cam.forward(), params.step_factor),
-            formula,
+            params_a: params_a.map(|x| x as f32),
+            params_b: params_b.map(|x| x as f32),
+            inversion,
+            misc: [fog as f32, params.palette.cycle_count.max(0.0001), free_radius as f32, 0.0],
             background: [bg[0] as f32 / 255.0, bg[1] as f32 / 255.0, bg[2] as f32 / 255.0, 1.0],
             counts: [params.formula.shader_id(), params.max_iterations, params.max_steps, stop_count],
-            coloring: [params.palette.cycle_count.max(0.0001), 0.0, 0.0, 0.0],
         }
     }
 }

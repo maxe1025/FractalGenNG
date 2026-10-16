@@ -1,11 +1,26 @@
 use eframe::egui;
-use fractal_core::fractal3d::{Formula3D, Params3D, MANDELBOX_DEFAULT, MANDELBULB_DEFAULT};
+use fractal_core::fractal3d::{
+    Formula3D, Inversion, Params3D, KIFS_DEFAULT, MANDELBOX_DEFAULT, MANDELBULB_DEFAULT, PSEUDO_KLEINIAN_DEFAULT,
+};
 
 use crate::app::FractalApp;
 use crate::ui::theme;
 use crate::ui::viewport3d::FLY_SPEED_RANGE;
 
-const FORMULA_CHOICES: [Formula3D; 2] = [MANDELBOX_DEFAULT, MANDELBULB_DEFAULT];
+const FORMULA_CHOICES: [Formula3D; 4] = [MANDELBOX_DEFAULT, MANDELBULB_DEFAULT, KIFS_DEFAULT, PSEUDO_KLEINIAN_DEFAULT];
+
+/// Centered on the origin, which lies inside the Mandelbulb's and the
+/// Mandelbox's solid — so the inverted space is a closed cave.
+const DEFAULT_INVERSION: Inversion = Inversion { center: [0.0, 0.0, 0.0], radius: 1.0 };
+
+fn vec3_editor(ui: &mut egui::Ui, label: &str, v: &mut [f64; 3], range: std::ops::RangeInclusive<f64>) {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        for (c, axis) in v.iter_mut().zip(["x ", "y ", "z "]) {
+            ui.add(egui::DragValue::new(c).range(range.clone()).speed(0.002).prefix(axis));
+        }
+    });
+}
 
 pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
     theme::section(ui, "Formula", |ui| {
@@ -46,6 +61,51 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
                     ui.add(egui::DragValue::new(fixed_radius).range(0.1..=3.0).speed(0.005));
                 });
             }
+            Formula3D::Kifs { scale, offset, rotation_degrees } => {
+                ui.horizontal(|ui| {
+                    ui.label("Scale:");
+                    ui.add(egui::DragValue::new(scale).range(1.2..=5.0).speed(0.005))
+                        .on_hover_text("3 with offset 1 and no rotation is the Menger sponge.");
+                });
+                vec3_editor(ui, "Offset:", offset, 0.0..=3.0);
+                ui.horizontal(|ui| {
+                    ui.label("Rotation:");
+                    ui.add(egui::DragValue::new(&mut rotation_degrees[0]).range(-180.0..=180.0).speed(0.2).prefix("x ").suffix("°"));
+                    ui.add(egui::DragValue::new(&mut rotation_degrees[1]).range(-180.0..=180.0).speed(0.2).prefix("z ").suffix("°"));
+                });
+            }
+            Formula3D::PseudoKleinian { box_size, size, thickness } => {
+                vec3_editor(ui, "Box size:", box_size, 0.1..=2.0);
+                ui.horizontal(|ui| {
+                    ui.label("Inversion size:");
+                    ui.add(egui::DragValue::new(size).range(0.1..=3.0).speed(0.002));
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Thickness:");
+                    ui.add(egui::DragValue::new(thickness).range(0.0..=0.5).speed(0.0005));
+                });
+            }
+        }
+    });
+
+    theme::section(ui, "Inside-Out", |ui| {
+        let mut inverted = app.params3d.inversion.is_some();
+        if ui
+            .checkbox(&mut inverted, "Sphere inversion")
+            .on_hover_text(
+                "Turns space inside out around a center point. With the center inside the fractal's solid, \
+                 the space around the fractal becomes a closed cave walled in by its surface.",
+            )
+            .changed()
+        {
+            app.params3d.set_inversion(inverted.then_some(DEFAULT_INVERSION));
+        }
+        if let Some(inversion) = &mut app.params3d.inversion {
+            vec3_editor(ui, "Center:", &mut inversion.center, -3.0..=3.0);
+            ui.horizontal(|ui| {
+                ui.label("Radius:");
+                ui.add(egui::DragValue::new(&mut inversion.radius).range(0.05..=5.0).speed(0.005));
+            });
         }
     });
 

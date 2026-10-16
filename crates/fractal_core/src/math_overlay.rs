@@ -197,6 +197,45 @@ pub fn describe_3d(params: &Params3D, detail: MathDetail) -> Vec<String> {
             });
             lines.push("z₀ = c = point on the ray,   DE = |z| / |dr|".to_string());
         }
+        Formula3D::Kifs { scale, offset, rotation_degrees } => {
+            lines.push("z → s·rot(sort(|z|)) − (s − 1)·o   (sorted x ≥ y ≥ z)".to_string());
+            lines.push("rot = Rz(β)·Rx(α),   z₀ = point on the ray".to_string());
+            lines.push("DE = distance(z, unit cube) / s^iterations".to_string());
+            if detail != MathDetail::Formula {
+                lines.push(format!(
+                    "s = {},  o = {},  α = {}°,  β = {}°",
+                    format_scalar(scale),
+                    format_vec3(offset),
+                    format_scalar(rotation_degrees[0]),
+                    format_scalar(rotation_degrees[1])
+                ));
+            }
+        }
+        Formula3D::PseudoKleinian { box_size, size, thickness } => {
+            lines.push("z → 2·clamp(z, −b, b) − z,   then z → z·k,  k = max(S/|z|², 1)".to_string());
+            lines.push("z₀ = point on the ray,   K = product of all k".to_string());
+            lines.push("DE = max(ρ − T, ρ·|z.z| / |z|) / K,   ρ = |z.xy|".to_string());
+            if detail != MathDetail::Formula {
+                lines.push(format!(
+                    "b = {},  S = {},  T = {}",
+                    format_vec3(box_size),
+                    format_scalar(size),
+                    format_scalar(thickness)
+                ));
+            }
+        }
+    }
+
+    if let Some(inversion) = params.inversion {
+        lines.push(if detail == MathDetail::Formula {
+            "inverted: p → c + R²·(p − c) / |p − c|²".to_string()
+        } else {
+            format!(
+                "inverted: p → c + R²·(p − c) / |p − c|²,   c = {},  R = {}",
+                format_vec3(inversion.center),
+                format_scalar(inversion.radius)
+            )
+        });
     }
 
     if detail == MathDetail::Formula {
