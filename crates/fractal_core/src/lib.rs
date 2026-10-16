@@ -7,6 +7,7 @@ pub mod math_overlay;
 pub mod orbit;
 pub mod palette;
 pub mod params;
+pub mod project;
 
 pub use bookmark::Bookmark;
 pub use hp::HpComplex;

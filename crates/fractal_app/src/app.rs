@@ -8,6 +8,7 @@ use fractal_core::{Bookmark, FractalParams, Palette};
 use crate::gpu::FractalRenderer;
 use crate::ui::bookmarks::BookmarksState;
 use crate::ui::export_panel::ExportState;
+use crate::project::{self, ProjectState};
 use crate::ui::timeline::TimelineState;
 use crate::ui::palette_editor::PaletteEditorState;
 use crate::ui::side_panel::reset_center;
@@ -28,6 +29,7 @@ pub struct FractalApp {
     pub bookmarks: Vec<Bookmark>,
     pub bookmarks_ui: BookmarksState,
     pub palette_ui: PaletteEditorState,
+    pub project: ProjectState,
 }
 
 impl FractalApp {
@@ -46,7 +48,7 @@ impl FractalApp {
             FractalRenderer::new(&render_state.device, &mut egui_renderer, 800, 600)
         };
 
-        Self {
+        let mut app = Self {
             params: FractalParams::default(),
             params3d: Params3D::default(),
             view: ViewState::default(),
@@ -58,7 +60,11 @@ impl FractalApp {
             bookmarks: crate::presets::load_bookmarks(),
             bookmarks_ui: BookmarksState::default(),
             palette_ui: PaletteEditorState::default(),
-        }
+            project: ProjectState::default(),
+        };
+        // A fresh start counts as an unmodified, untitled project.
+        project::mark_saved(&mut app);
+        app
     }
 
     pub fn is_3d(&self) -> bool {
@@ -108,6 +114,7 @@ impl FractalApp {
 
 impl eframe::App for FractalApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        project::update(ui.ctx(), self);
         timeline::handle_shortcuts(ui.ctx(), self);
         header_bar(ui, self);
         properties_panel(ui, self);
@@ -154,6 +161,8 @@ fn header_bar(ui: &mut egui::Ui, app: &mut FractalApp) {
                         .color(theme::TEXT_WEAK)
                         .small(),
                 );
+                ui.separator();
+                project::file_menu(ui, app);
                 ui.separator();
                 ui.selectable_value(&mut app.view.dimension, Dimension::Two, "2D");
                 ui.selectable_value(&mut app.view.dimension, Dimension::Three, "3D");

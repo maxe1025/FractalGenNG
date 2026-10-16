@@ -11,8 +11,6 @@ description = "Pure math/rendering core for FractalGen: fractal kinds, palettes,
 astro-float = "0.9.5"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 rayon = "1.12.0"
+ron = "0.12.2"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
-
-[dev-dependencies]
-ron = "0.12.2"

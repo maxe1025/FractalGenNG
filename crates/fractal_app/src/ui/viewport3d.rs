@@ -100,7 +100,8 @@ fn fly(ui: &egui::Ui, response: &egui::Response, rect: egui::Rect, app: &mut Fra
     }
 
     // Don't steal letters typed into a text field in the side panel.
-    if ui.ctx().egui_wants_keyboard_input() {
+    // Ctrl/Cmd combos are commands (Ctrl+S saves), not flying.
+    if ui.ctx().egui_wants_keyboard_input() || ui.input(|i| i.modifiers.command) {
         return moved;
     }
     let (axes, tilt, dt, boost) = ui.input(|i| {

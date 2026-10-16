@@ -132,9 +132,13 @@ fn bigfloat_to_f64(value: &BigFloat) -> f64 {
     decimal_string(value, RoundingMode::ToEven).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0)
 }
 
+/// Parses with round-to-nearest. The serialized decimal (see `Serialize`)
+/// carries more digits than the precision needs, so nearest-rounding lands
+/// back on the exact binary value — truncation would instead shave off up
+/// to one unit in the last place on every save/load cycle.
 fn bigfloat_from_decimal_str(s: &str, precision_bits: u32) -> BigFloat {
     let mut cc = Consts::new().expect("astro-float constants cache allocation");
-    BigFloat::parse(s, Radix::Dec, precision_bits as usize, RoundingMode::None, &mut cc)
+    BigFloat::parse(s, Radix::Dec, precision_bits as usize, RoundingMode::ToEven, &mut cc)
 }
 
 fn decimal_string(value: &BigFloat, rm: RoundingMode) -> Option<String> {
@@ -223,8 +227,8 @@ impl Serialize for HpComplex {
             re: &'a str,
             im: &'a str,
         }
-        let re_s = decimal_string(&self.re, RoundingMode::None).unwrap_or_else(|| "0".to_string());
-        let im_s = decimal_string(&self.im, RoundingMode::None).unwrap_or_else(|| "0".to_string());
+        let re_s = decimal_string(&self.re, RoundingMode::ToEven).unwrap_or_else(|| "0".to_string());
+        let im_s = decimal_string(&self.im, RoundingMode::ToEven).unwrap_or_else(|| "0".to_string());
         Repr { precision_bits: self.precision_bits, re: &re_s, im: &im_s }.serialize(serializer)
     }
 }
@@ -310,6 +314,24 @@ mod tests {
         let hp = HpComplex::from_f64_pair(0.5, 0.0, 256).add(&HpComplex::from_f64_pair(1.0e-30, 0.0, 256));
         let (re, _) = hp.to_fixed_decimal_pair(32);
         assert_eq!(re, format!("0.5{}1", "0".repeat(28)));
+    }
+
+    #[test]
+    fn repeated_save_load_cycles_do_not_drift() {
+        // A precision that isn't a whole number of 64-bit words, and a
+        // value with a long binary expansion — the case that used to lose
+        // a digit per cycle when both directions truncated.
+        let p = 199;
+        let mut hp = HpComplex::from_f64_pair(-0.75, 0.1, p).add(&HpComplex::from_f64_pair(1.0e-35, -2.0e-36, p));
+        hp = ron::from_str(&ron::ser::to_string(&hp).unwrap()).unwrap();
+        let first = ron::ser::to_string(&hp).unwrap();
+        let mut text = first.clone();
+        for _ in 0..20 {
+            let back: HpComplex = ron::from_str(&text).unwrap();
+            assert_eq!(back, hp);
+            text = ron::ser::to_string(&back).unwrap();
+        }
+        assert_eq!(text, first);
     }
 
     #[test]

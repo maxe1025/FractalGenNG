@@ -32,6 +32,9 @@ Blender-inspired dark UI.
 - **Export**: still-image PNG export with supersampling (2D and 3D);
   animation frame-sequence export of the timeline's range, and optional
   video stitching via a system `ffmpeg` if present on `PATH`.
+- **Projects**: save and reopen everything you set up — 2D and 3D
+  fractals, palettes, the animation timeline, overlay and export settings
+  — as a `.fgproj` file (File menu, Ctrl+S/O/N).
 - **Bookmarks**: save/load/go-to named focus points.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full version history — it's also

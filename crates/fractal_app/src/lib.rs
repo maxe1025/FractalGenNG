@@ -1,5 +1,6 @@
 pub mod app;
 pub mod ffmpeg;
+pub mod project;
 pub mod gpu;
 pub mod overlay_burn;
 pub mod presets;

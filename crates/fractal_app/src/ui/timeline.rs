@@ -20,6 +20,7 @@ use fractal_core::export::animation::{Easing, Keyframe};
 use fractal_core::export::camera_path::CameraKeyframe;
 use fractal_core::export::keyframes::{self, Keyed};
 use fractal_core::kinds::KindParam;
+use fractal_core::project::AnimationSettings;
 
 use crate::app::FractalApp;
 use crate::ui::theme;
@@ -82,6 +83,40 @@ impl Default for TimelineState {
 }
 
 impl TimelineState {
+    /// The part of the timeline a project file keeps.
+    pub fn settings(&self) -> AnimationSettings {
+        AnimationSettings {
+            keys_2d: self.keys_2d.clone(),
+            keys_3d: self.keys_3d.clone(),
+            start: self.start,
+            end: self.end,
+            fps: self.fps,
+            looping: self.looping,
+            current_frame: self.current_frame,
+        }
+    }
+
+    /// Restores a project's timeline; selection and playback start fresh.
+    pub fn load_settings(&mut self, settings: AnimationSettings) {
+        let end = settings.end.clamp(1, MAX_FRAME);
+        *self = Self {
+            keys_2d: settings.keys_2d,
+            keys_3d: settings.keys_3d,
+            start: settings.start.min(end - 1),
+            end,
+            fps: settings.fps.clamp(1, 240),
+            looping: settings.looping,
+            current_frame: settings.current_frame.min(MAX_FRAME),
+            ..Self::default()
+        };
+        // Files are written sorted, but a hand-edited one might not be.
+        self.keys_2d.sort_by_key(|k| k.frame);
+        self.keys_2d.dedup_by_key(|k| k.frame);
+        self.keys_3d.sort_by_key(|k| k.frame);
+        self.keys_3d.dedup_by_key(|k| k.frame);
+        self.fit_view();
+    }
+
     pub fn range(&self) -> RangeInclusive<u32> {
         self.start..=self.end
     }
@@ -684,6 +719,25 @@ mod tests {
         assert_eq!(frame_ranges(&[3, 4, 5, 9, 12, 13]), "3–5, 9, 12–13");
         assert_eq!(frame_ranges(&[7]), "7");
         assert!(frame_ranges(&[]).is_empty());
+    }
+
+    #[test]
+    fn timeline_settings_round_trip_and_repair_hand_edited_files() {
+        let key = |frame| Keyframe { frame, zoom: f64::from(frame), kind_param: KindParam::None, easing: Easing::Linear };
+        let mut timeline = TimelineState { keys_2d: vec![key(5), key(40)], start: 3, end: 90, fps: 25, ..TimelineState::default() };
+        let mut loaded = TimelineState::default();
+        loaded.load_settings(timeline.settings());
+        assert_eq!(loaded.keys_2d, timeline.keys_2d);
+        assert_eq!((loaded.start, loaded.end, loaded.fps), (3, 90, 25));
+
+        // Unsorted, duplicated keys and an inverted range get repaired.
+        timeline.keys_2d = vec![key(40), key(5), key(40)];
+        let mut settings = timeline.settings();
+        settings.start = 50;
+        settings.end = 10;
+        loaded.load_settings(settings);
+        assert_eq!(loaded.keys_2d.iter().map(|k| k.frame).collect::<Vec<_>>(), vec![5, 40]);
+        assert!(loaded.start < loaded.end);
     }
 
     #[test]

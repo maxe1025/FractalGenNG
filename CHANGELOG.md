@@ -4,6 +4,27 @@ All notable changes to FractalGen are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Project files** (`.fgproj`, human-readable RON): save and reopen a
+  whole piece of work — the 2D and 3D fractals with their palettes, the
+  animation timeline (keyframes, range, fps, playhead), the math-overlay
+  and export settings, and which mode was showing. A File menu in the
+  header offers New, Open…, Save and Save As… (Ctrl+N/O/S,
+  Ctrl+Shift+S). Files carry a format version, so a newer file is refused
+  with a clear message instead of loading half-way.
+- **Unsaved-changes protection**: the window title shows the project name
+  with `*` while it has unsaved changes, and New, Open and closing the
+  window ask whether to save first.
+
+### Fixed
+
+- Saving and reloading a deep-zoom center (in bookmarks and projects)
+  could shift it by one unit in its last digit per cycle, because both
+  directions truncated; it now round-trips exactly.
+
 ## [0.3.2] - 2026-10-16
 
 ### Added
