@@ -30,7 +30,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
     let available = ui.available_size();
     let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
 
-    if fly(ui, &response, rect, app) {
+    if let Some(started) = app.view.path_preview {
+        play_path_preview(ui, app, started);
+    } else if fly(ui, &response, rect, app) {
         app.view.last_camera_motion = Some(Instant::now());
     }
     let previewing = app.view.last_camera_motion.is_some_and(|t| t.elapsed() < SETTLE_TIME);
@@ -55,6 +57,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
     if app.overlay.show_in_viewport {
         crate::ui::math_overlay::paint(ui, rect, app.overlay_lines(), &app.overlay);
     }
+}
+
+/// Moves the camera along the Export tab's camera path in real time at the
+/// animation's fps (in coarse preview resolution), stopping at the end.
+fn play_path_preview(ui: &egui::Ui, app: &mut FractalApp, started: Instant) {
+    let path = app.camera_path();
+    let frame = (started.elapsed().as_secs_f64() * f64::from(app.export.anim_fps)) as u32;
+    if frame > path.last_frame() {
+        app.view.path_preview = None;
+        return;
+    }
+    app.params3d.camera = path.camera_at_frame(frame);
+    app.export.anim3d_scrub_frame = frame;
+    app.view.last_camera_motion = Some(Instant::now());
+    ui.ctx().request_repaint();
 }
 
 /// Camera readout and controls hint for the bottom status bar.

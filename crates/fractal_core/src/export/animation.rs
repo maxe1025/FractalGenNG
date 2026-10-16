@@ -22,7 +22,7 @@ pub enum Easing {
 }
 
 impl Easing {
-    fn remap(self, t: f64) -> f64 {
+    pub fn remap(self, t: f64) -> f64 {
         match self {
             Easing::Linear => t,
             Easing::Accelerating { exponent } => t.powf(exponent),

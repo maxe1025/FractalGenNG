@@ -2,17 +2,35 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui;
 use fractal_core::export::animation::{Easing, Keyframe, Timeline};
+use fractal_core::export::camera_path::CameraKeyframe;
 use fractal_core::export::image_export::{self, ImageError};
+use fractal_core::fractal3d::Params3D;
 use fractal_core::hp::MAX_INTERACTIVE_ZOOM;
 use fractal_core::kinds::KindParam;
 use fractal_core::math_overlay::{self, MathOverlay};
 use fractal_core::FractalParams;
 
 use crate::app::FractalApp;
-use crate::ui::{math_overlay as math_overlay_ui, theme};
+use crate::ui::{camera_path_panel, math_overlay as math_overlay_ui, theme};
+
+/// One frame of an animation job: a 2D or a 3D render.
+#[derive(Clone)]
+pub enum FrameParams {
+    Plane(FractalParams),
+    Volume(Params3D),
+}
+
+impl FrameParams {
+    fn overlay_lines(&self, overlay: &MathOverlay) -> Vec<String> {
+        match self {
+            FrameParams::Plane(params) => math_overlay::describe(params, overlay.detail),
+            FrameParams::Volume(params) => math_overlay::describe_3d(params, overlay.detail),
+        }
+    }
+}
 
 pub struct AnimationJob {
-    pub frames: Vec<FractalParams>,
+    pub frames: Vec<FrameParams>,
     pub next_index: usize,
     pub output_dir: PathBuf,
     pub width: u32,
@@ -46,6 +64,13 @@ pub struct ExportState {
     /// neighbors.
     pub anim_keyframes: Vec<Keyframe>,
     pub anim_selected_keyframe: usize,
+    /// The 3D camera path's keyframes, under the same invariants as
+    /// `anim_keyframes`. Empty until the 3D animation section is first
+    /// shown, which seeds it from the current camera.
+    pub anim3d_keyframes: Vec<CameraKeyframe>,
+    pub anim3d_selected_keyframe: usize,
+    /// The 3D path's scrub-slider position.
+    pub anim3d_scrub_frame: u32,
     pub anim_frame_count: u32,
     pub anim_fps: u32,
     pub anim_job: Option<AnimationJob>,
@@ -65,6 +90,9 @@ impl Default for ExportState {
                 Keyframe { frame: 119, zoom: 1000.0, kind_param: KindParam::None, easing: Easing::Linear },
             ],
             anim_selected_keyframe: 0,
+            anim3d_keyframes: Vec::new(),
+            anim3d_selected_keyframe: 0,
+            anim3d_scrub_frame: 0,
             anim_frame_count: 120,
             anim_fps: 30,
             anim_job: None,
@@ -154,34 +182,57 @@ fn sync_kind_param_defaults(app: &mut FractalApp) {
 /// Applies a `anim_frame_count` change: moves the last keyframe to the new
 /// final frame, and clamps any middle keyframes that would otherwise end up
 /// past it (the first keyframe always stays pinned at frame 0).
-fn apply_frame_count(app: &mut FractalApp) {
-    let last_frame = app.export.anim_frame_count.saturating_sub(1);
-    let n = app.export.anim_keyframes.len();
+pub(crate) fn fit_keyframes_to_frame_count<K: TimelineKey>(keyframes: &mut [K], frame_count: u32) {
+    let last_frame = frame_count.saturating_sub(1);
+    let n = keyframes.len();
     if n == 0 {
         return;
     }
-    if let Some(last) = app.export.anim_keyframes.last_mut() {
-        last.frame = last_frame;
+    if let Some(last) = keyframes.last_mut() {
+        last.set_frame(last_frame);
     }
-    for kf in app.export.anim_keyframes[..n - 1].iter_mut().skip(1) {
-        kf.frame = kf.frame.min(last_frame.saturating_sub(1));
+    for kf in keyframes[..n - 1].iter_mut().skip(1) {
+        kf.set_frame(kf.frame().min(last_frame.saturating_sub(1)));
+    }
+}
+
+fn apply_frame_count(app: &mut FractalApp) {
+    fit_keyframes_to_frame_count(&mut app.export.anim_keyframes, app.export.anim_frame_count);
+    fit_keyframes_to_frame_count(&mut app.export.anim3d_keyframes, app.export.anim_frame_count);
+}
+
+/// What the timeline strip needs from a keyframe — shared by the 2D
+/// zoom/parameter keyframes and the 3D camera keyframes.
+pub(crate) trait TimelineKey {
+    fn frame(&self) -> u32;
+    fn set_frame(&mut self, frame: u32);
+}
+
+impl TimelineKey for Keyframe {
+    fn frame(&self) -> u32 {
+        self.frame
+    }
+    fn set_frame(&mut self, frame: u32) {
+        self.frame = frame;
+    }
+}
+
+impl TimelineKey for CameraKeyframe {
+    fn frame(&self) -> u32 {
+        self.frame
+    }
+    fn set_frame(&mut self, frame: u32) {
+        self.frame = frame;
     }
 }
 
 fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
     run_animation_step(ui, app);
 
-    if app.export.anim_job.is_none() && app.is_3d() {
-        ui.label(
-            egui::RichText::new("Camera-path animation for 3D is not available yet — switch to 2D to animate.")
-                .color(theme::TEXT_WEAK)
-                .small(),
-        );
-        return;
-    }
-
     if app.export.anim_job.is_none() {
-        sync_kind_param_defaults(app);
+        if !app.is_3d() {
+            sync_kind_param_defaults(app);
+        }
 
         ui.horizontal(|ui| {
             ui.label("Frame count:");
@@ -211,22 +262,31 @@ fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
         );
 
         ui.add_space(6.0);
-        timeline_strip(ui, app);
-        if ui.small_button("+ Add keyframe").clicked() {
-            add_keyframe(app);
-        }
+        if app.is_3d() {
+            camera_path_panel::show(ui, app);
+        } else {
+            timeline_strip(ui, &mut app.export.anim_keyframes, &mut app.export.anim_selected_keyframe, "timeline_kf");
+            if ui.small_button("+ Add keyframe").clicked() {
+                add_keyframe(app);
+            }
 
-        ui.add_space(6.0);
-        ui.separator();
-        show_selected_keyframe_editor(ui, app);
+            ui.add_space(6.0);
+            ui.separator();
+            show_selected_keyframe_editor(ui, app);
+        }
 
         ui.add_space(4.0);
         if ui.button("Render Animation...").clicked()
             && let Some(dir) = rfd::FileDialog::new().pick_folder()
         {
-            let timeline = Timeline { base: app.params.clone(), keyframes: app.export.anim_keyframes.clone() };
+            let frames = if app.is_3d() {
+                app.camera_path().generate_frames().into_iter().map(FrameParams::Volume).collect()
+            } else {
+                let timeline = Timeline { base: app.params.clone(), keyframes: app.export.anim_keyframes.clone() };
+                timeline.generate_frames().into_iter().map(FrameParams::Plane).collect()
+            };
             app.export.anim_job = Some(AnimationJob {
-                frames: timeline.generate_frames(),
+                frames,
                 next_index: 0,
                 output_dir: dir,
                 width: app.export.width,
@@ -260,7 +320,12 @@ fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
 /// draggable marker per keyframe (click to select; drag to reposition — the
 /// first/last markers are pinned, since they define the animation's start
 /// and total length rather than a point along it).
-fn timeline_strip(ui: &mut egui::Ui, app: &mut FractalApp) {
+pub(crate) fn timeline_strip<K: TimelineKey>(
+    ui: &mut egui::Ui,
+    keyframes: &mut [K],
+    selected: &mut usize,
+    id_salt: &str,
+) {
     let bar_height = 28.0;
     let desired_size = egui::vec2(ui.available_width(), bar_height);
     let (rect, _response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
@@ -271,22 +336,22 @@ fn timeline_strip(ui: &mut egui::Ui, app: &mut FractalApp) {
         egui::Stroke::new(1.5, theme::TEXT_WEAK),
     );
 
-    let n = app.export.anim_keyframes.len();
-    let last_frame = app.export.anim_keyframes.last().map(|k| k.frame).unwrap_or(1).max(1);
+    let n = keyframes.len();
+    let last_frame = keyframes.last().map(|k| k.frame()).unwrap_or(1).max(1);
     let marker_radius = 7.0;
 
     for i in 0..n {
-        let frame = app.export.anim_keyframes[i].frame;
+        let frame = keyframes[i].frame();
         let x = rect.left() + (frame as f32 / last_frame as f32) * rect.width();
         let marker_center = egui::pos2(x, rect.center().y);
         let marker_rect =
             egui::Rect::from_center_size(marker_center, egui::vec2(marker_radius * 2.0, marker_radius * 2.0));
-        let marker_id = ui.id().with("timeline_kf").with(i);
+        let marker_id = ui.id().with(id_salt).with(i);
         let draggable = i != 0 && i != n - 1;
         let sense = if draggable { egui::Sense::click_and_drag() } else { egui::Sense::click() };
         let marker_response = ui.interact(marker_rect, marker_id, sense);
 
-        let is_selected = app.export.anim_selected_keyframe == i;
+        let is_selected = *selected == i;
         ui.painter().circle(
             marker_center,
             marker_radius,
@@ -295,17 +360,16 @@ fn timeline_strip(ui: &mut egui::Ui, app: &mut FractalApp) {
         );
 
         if marker_response.clicked() {
-            app.export.anim_selected_keyframe = i;
+            *selected = i;
         }
         if draggable && marker_response.dragged() && rect.width() > 0.0 {
             let delta_frames = (marker_response.drag_delta().x / rect.width()) * last_frame as f32;
-            let lower = app.export.anim_keyframes[i - 1].frame + 1;
-            let upper = app.export.anim_keyframes[i + 1].frame.saturating_sub(1).max(lower);
-            let new_frame = (app.export.anim_keyframes[i].frame as f32 + delta_frames)
-                .round()
-                .clamp(lower as f32, upper as f32) as u32;
-            app.export.anim_keyframes[i].frame = new_frame;
-            app.export.anim_selected_keyframe = i;
+            let lower = keyframes[i - 1].frame() + 1;
+            let upper = keyframes[i + 1].frame().saturating_sub(1).max(lower);
+            let new_frame =
+                (keyframes[i].frame() as f32 + delta_frames).round().clamp(lower as f32, upper as f32) as u32;
+            keyframes[i].set_frame(new_frame);
+            *selected = i;
         }
     }
 }
@@ -401,35 +465,38 @@ fn show_selected_keyframe_editor(ui: &mut egui::Ui, app: &mut FractalApp) {
         // Easing governs the segment leading INTO this keyframe from the
         // previous one — meaningless on the first keyframe, since no
         // segment precedes it.
-        let easing = app.export.anim_keyframes[selected].easing;
-        let easing_name = match easing {
-            Easing::Linear => "Linear",
-            Easing::Accelerating { .. } => "Accelerating",
-        };
-        ui.horizontal(|ui| {
-            ui.label("Easing in:");
-            egui::ComboBox::from_id_salt(("kf_easing", selected)).selected_text(easing_name).show_ui(ui, |ui| {
-                if ui.selectable_label(matches!(easing, Easing::Linear), "Linear").clicked() {
-                    app.export.anim_keyframes[selected].easing = Easing::Linear;
-                }
-                if ui.selectable_label(matches!(easing, Easing::Accelerating { .. }), "Accelerating").clicked() {
-                    app.export.anim_keyframes[selected].easing = Easing::Accelerating { exponent: 2.0 };
-                }
-            });
-        });
-        if let Easing::Accelerating { mut exponent } = app.export.anim_keyframes[selected].easing {
-            ui.horizontal(|ui| {
-                ui.label("Acceleration:");
-                if ui.add(egui::DragValue::new(&mut exponent).range(0.2..=5.0).speed(0.05)).changed() {
-                    app.export.anim_keyframes[selected].easing = Easing::Accelerating { exponent };
-                }
-            });
-        }
+        easing_editor(ui, &mut app.export.anim_keyframes[selected].easing, ("kf_easing", selected));
     }
 
     let can_remove = n > 2 && !is_first;
     if ui.add_enabled(can_remove, egui::Button::new("Remove keyframe")).clicked() {
         remove_selected_keyframe(app);
+    }
+}
+
+/// Pacing of the segment leading into a keyframe.
+pub(crate) fn easing_editor(ui: &mut egui::Ui, easing: &mut Easing, id_salt: impl std::hash::Hash + std::fmt::Debug) {
+    let easing_name = match easing {
+        Easing::Linear => "Linear",
+        Easing::Accelerating { .. } => "Accelerating",
+    };
+    ui.horizontal(|ui| {
+        ui.label("Easing in:");
+        egui::ComboBox::from_id_salt(id_salt).selected_text(easing_name).show_ui(ui, |ui| {
+            if ui.selectable_label(matches!(easing, Easing::Linear), "Linear").clicked() {
+                *easing = Easing::Linear;
+            }
+            if ui.selectable_label(matches!(easing, Easing::Accelerating { .. }), "Accelerating").clicked() {
+                *easing = Easing::Accelerating { exponent: 2.0 };
+            }
+        });
+    });
+    if let Easing::Accelerating { exponent } = easing {
+        ui.horizontal(|ui| {
+            ui.label("Acceleration:");
+            ui.add(egui::DragValue::new(exponent).range(0.2..=5.0).speed(0.05))
+                .on_hover_text("Above 1 starts slow and speeds up; below 1 starts fast and slows down.");
+        });
     }
 }
 
@@ -477,7 +544,7 @@ fn show_ffmpeg_stitch_controls(ui: &mut egui::Ui, app: &mut FractalApp) {
 /// active so the export keeps progressing without needing user input.
 fn run_animation_step(ui: &mut egui::Ui, app: &mut FractalApp) {
     struct Step {
-        params: FractalParams,
+        params: FrameParams,
         output_dir: PathBuf,
         index: usize,
         total: usize,
@@ -506,19 +573,17 @@ fn run_animation_step(ui: &mut egui::Ui, app: &mut FractalApp) {
 
     let render_w = step.width * step.supersample;
     let render_h = step.height * step.supersample;
-    let rgba = app.renderer.render_to_rgba(
-        &app.render_state.device,
-        &app.render_state.queue,
-        &step.params,
-        render_w,
-        render_h,
-    );
+    let (device, queue) = (&app.render_state.device, &app.render_state.queue);
+    let rgba = match &step.params {
+        FrameParams::Plane(params) => app.renderer.render_to_rgba(device, queue, params, render_w, render_h),
+        FrameParams::Volume(params) => app.renderer.render_3d_to_rgba(device, queue, params, render_w, render_h),
+    };
     let path = step.output_dir.join(format!("frame_{:05}.png", step.index));
     let result = save_export_frame(
         rgba,
         (render_w, render_h),
         (step.width, step.height),
-        &math_overlay::describe(&step.params, step.overlay.detail),
+        &step.params.overlay_lines(&step.overlay),
         &step.overlay,
         &path,
     );

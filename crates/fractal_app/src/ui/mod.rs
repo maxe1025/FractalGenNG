@@ -1,5 +1,6 @@
 pub mod about;
 pub mod bookmarks;
+pub mod camera_path_panel;
 pub mod export_panel;
 pub mod math_overlay;
 pub mod palette_editor;

@@ -12,6 +12,8 @@ pub struct ViewState {
     /// When the 3D camera last moved; the viewport renders a coarse preview
     /// until it has been still for a moment.
     pub last_camera_motion: Option<std::time::Instant>,
+    /// When the 3D camera-path preview started playing; `None` = stopped.
+    pub path_preview: Option<std::time::Instant>,
 }
 
 impl Default for ViewState {
@@ -22,6 +24,7 @@ impl Default for ViewState {
             dimension: Dimension::Two,
             fly_speed: 1.0,
             last_camera_motion: None,
+            path_preview: None,
         }
     }
 }

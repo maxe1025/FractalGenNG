@@ -1,4 +1,5 @@
 use eframe::egui;
+use fractal_core::export::camera_path::CameraPath;
 use fractal_core::fractal3d::Params3D;
 use fractal_core::math_overlay::{self, MathOverlay};
 use fractal_core::{Bookmark, FractalParams, Palette};
@@ -76,6 +77,12 @@ impl FractalApp {
         } else {
             math_overlay::describe(&self.params, self.overlay.detail)
         }
+    }
+
+    /// The 3D animation as currently edited: today's 3D parameters, with the
+    /// camera following the Export tab's keyframes.
+    pub fn camera_path(&self) -> CameraPath {
+        CameraPath { base: self.params3d.clone(), keyframes: self.export.anim3d_keyframes.clone() }
     }
 
     /// Back to the current fractal's default framing.
