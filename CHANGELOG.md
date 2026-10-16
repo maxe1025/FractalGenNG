@@ -4,6 +4,29 @@ All notable changes to FractalGen are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Timeline editor** below the viewport, for 2D and 3D animations alike
+  (modeled on Blender's): a frame ruler to scrub, a keyframe track,
+  play/pause with looping, jumps to start/end and between keyframes, a
+  frame field, zoom (wheel) and pan (Ctrl+wheel, middle-drag), and frames
+  where a 3D camera path runs through the fractal marked in red.
+- **Blender-style keying**: put the playhead on a frame, set up the view or
+  camera, press I (or "◆ Key") — replacing any keyframe on that frame.
+  Click a keyframe to select it and jump there, drag it to retime it,
+  delete it with X/Delete; easing is set per keyframe in the timeline
+  header. Shortcuts: Space, I, X/Delete, ←/→, Shift+←/→, ↑/↓.
+
+### Changed
+
+- The animation's frame range is now a free start/end range, independent
+  of the keyframes; frames before the first or after the last keyframe
+  hold its values. Animation export renders that range.
+- The keyframe strips, per-keyframe editors and scrub slider in the Export
+  tab were replaced by the timeline; the Export tab now only renders.
+
 ## [0.3.1] - 2026-10-16
 
 ### Added

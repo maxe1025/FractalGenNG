@@ -95,12 +95,18 @@ impl Timeline {
         (0..=last.frame).map(|frame| self.params_at_frame(frame)).collect()
     }
 
-    /// The interpolated `(zoom, kind_param)` at an arbitrary frame within
-    /// the timeline's range. Exposed for UI code that wants to seed a new
-    /// keyframe's initial values from wherever it's inserted on the
-    /// existing curve, so adding a keyframe doesn't create a visible jump.
+    /// One [`FractalParams`] per frame of `frames` — the render range, which
+    /// may extend before the first or past the last keyframe (those frames
+    /// hold the nearest keyframe's values).
+    pub fn frames_in_range(&self, frames: std::ops::RangeInclusive<u32>) -> Vec<FractalParams> {
+        frames.map(|frame| self.params_at_frame(frame)).collect()
+    }
+
+    /// The interpolated `(zoom, kind_param)` at an arbitrary frame. Before
+    /// the first and after the last keyframe the nearest keyframe's values
+    /// hold; with no keyframes at all, `base`'s.
     pub fn value_at_frame(&self, frame: u32) -> (f64, KindParam) {
-        let Some(last) = self.keyframes.last() else { return (1.0, KindParam::None) };
+        let Some(last) = self.keyframes.last() else { return (self.base.zoom, self.base.kind.animatable_param()) };
         if self.keyframes.len() == 1 {
             return (last.zoom, last.kind_param);
         }
@@ -114,7 +120,8 @@ impl Timeline {
         (zoom, kind_param)
     }
 
-    fn params_at_frame(&self, frame: u32) -> FractalParams {
+    /// `base` with the zoom and free parameter animated to `frame`.
+    pub fn params_at_frame(&self, frame: u32) -> FractalParams {
         let (zoom, kind_param) = self.value_at_frame(frame);
         frame_with_animatable(&self.base, zoom, kind_param)
     }
@@ -268,6 +275,33 @@ mod tests {
         // actual use case: seeding a new keyframe inserted mid-segment).
         let (_, mid_param) = timeline.value_at_frame(2);
         assert_eq!(mid_param, KindParam::Seed([0.5, -1.0]));
+    }
+
+    #[test]
+    fn render_range_holds_values_outside_the_keyframes() {
+        let base = FractalParams::default();
+        let timeline = Timeline {
+            base,
+            keyframes: vec![
+                Keyframe { frame: 10, zoom: 2.0, kind_param: KindParam::None, easing: Easing::Linear },
+                Keyframe { frame: 20, zoom: 8.0, kind_param: KindParam::None, easing: Easing::Linear },
+            ],
+        };
+        let zooms: Vec<f64> = timeline.frames_in_range(5..=25).iter().map(|p| p.zoom).collect();
+        assert_eq!(zooms.len(), 21);
+        assert!(zooms[..=5].iter().all(|&z| (z - 2.0).abs() < 1e-12), "held before the first key");
+        assert!(zooms[15..].iter().all(|&z| (z - 8.0).abs() < 1e-12), "held after the last key");
+        assert!((zooms[10] - 4.0).abs() < 1e-9, "geometric midpoint");
+    }
+
+    #[test]
+    fn empty_timeline_renders_the_base_view() {
+        let base = FractalParams { zoom: 42.0, ..FractalParams::julia_default() };
+        let timeline = Timeline { base: base.clone(), keyframes: Vec::new() };
+        for frame in timeline.frames_in_range(0..=3) {
+            assert_eq!(frame.zoom, 42.0);
+            assert_eq!(frame.kind, base.kind);
+        }
     }
 
     #[test]

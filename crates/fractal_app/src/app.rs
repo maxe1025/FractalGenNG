@@ -1,4 +1,5 @@
 use eframe::egui;
+use fractal_core::export::animation::Timeline;
 use fractal_core::export::camera_path::CameraPath;
 use fractal_core::fractal3d::Params3D;
 use fractal_core::math_overlay::{self, MathOverlay};
@@ -7,10 +8,11 @@ use fractal_core::{Bookmark, FractalParams, Palette};
 use crate::gpu::FractalRenderer;
 use crate::ui::bookmarks::BookmarksState;
 use crate::ui::export_panel::ExportState;
+use crate::ui::timeline::TimelineState;
 use crate::ui::palette_editor::PaletteEditorState;
 use crate::ui::side_panel::reset_center;
 use crate::ui::{
-    about, bookmarks, export_panel, palette_editor, side_panel, side_panel_3d, theme, viewport, viewport3d,
+    about, bookmarks, export_panel, palette_editor, side_panel, side_panel_3d, theme, timeline, viewport, viewport3d,
 };
 use crate::view_state::{Dimension, PropertiesTab, ViewState};
 
@@ -21,6 +23,7 @@ pub struct FractalApp {
     pub renderer: FractalRenderer,
     pub render_state: egui_wgpu::RenderState,
     pub export: ExportState,
+    pub timeline: TimelineState,
     pub overlay: MathOverlay,
     pub bookmarks: Vec<Bookmark>,
     pub bookmarks_ui: BookmarksState,
@@ -50,6 +53,7 @@ impl FractalApp {
             renderer,
             render_state,
             export: ExportState::default(),
+            timeline: TimelineState::default(),
             overlay: MathOverlay::default(),
             bookmarks: crate::presets::load_bookmarks(),
             bookmarks_ui: BookmarksState::default(),
@@ -80,9 +84,15 @@ impl FractalApp {
     }
 
     /// The 3D animation as currently edited: today's 3D parameters, with the
-    /// camera following the Export tab's keyframes.
+    /// camera following the timeline's 3D keyframes.
     pub fn camera_path(&self) -> CameraPath {
-        CameraPath { base: self.params3d.clone(), keyframes: self.export.anim3d_keyframes.clone() }
+        CameraPath { base: self.params3d.clone(), keyframes: self.timeline.keys_3d.clone() }
+    }
+
+    /// The 2D animation as currently edited: today's 2D parameters, with
+    /// zoom and the free parameter following the timeline's 2D keyframes.
+    pub fn timeline_2d(&self) -> Timeline {
+        Timeline { base: self.params.clone(), keyframes: self.timeline.keys_2d.clone() }
     }
 
     /// Back to the current fractal's default framing.
@@ -98,9 +108,11 @@ impl FractalApp {
 
 impl eframe::App for FractalApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        timeline::handle_shortcuts(ui.ctx(), self);
         header_bar(ui, self);
         properties_panel(ui, self);
         status_bar(ui, self);
+        timeline_panel(ui, self);
 
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(theme::viewport_bg()))
@@ -112,6 +124,19 @@ impl eframe::App for FractalApp {
                 }
             });
     }
+}
+
+/// Bottom dock above the status bar, under the viewport: the animation
+/// timeline (Blender's Timeline editor).
+fn timeline_panel(ui: &mut egui::Ui, app: &mut FractalApp) {
+    egui::Panel::bottom("timeline")
+        .resizable(true)
+        .default_size(112.0)
+        .size_range(84.0..=320.0)
+        .frame(egui::Frame::new().fill(theme::header_bg()).inner_margin(egui::Margin::symmetric(8, 4)))
+        .show(ui, |ui| {
+            timeline::show(ui, app);
+        });
 }
 
 /// Top chrome strip: app identity on the left, a quick "Reset view" action on

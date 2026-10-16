@@ -1,17 +1,13 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui;
-use fractal_core::export::animation::{Easing, Keyframe, Timeline};
-use fractal_core::export::camera_path::CameraKeyframe;
 use fractal_core::export::image_export::{self, ImageError};
 use fractal_core::fractal3d::Params3D;
-use fractal_core::hp::MAX_INTERACTIVE_ZOOM;
-use fractal_core::kinds::KindParam;
 use fractal_core::math_overlay::{self, MathOverlay};
 use fractal_core::FractalParams;
 
 use crate::app::FractalApp;
-use crate::ui::{camera_path_panel, math_overlay as math_overlay_ui, theme};
+use crate::ui::{math_overlay as math_overlay_ui, theme, timeline};
 
 /// One frame of an animation job: a 2D or a 3D render.
 #[derive(Clone)]
@@ -36,8 +32,8 @@ pub struct AnimationJob {
     pub width: u32,
     pub height: u32,
     pub supersample: u32,
-    /// Snapshot of `ExportState::anim_fps` at render-start time, so a fps
-    /// edit mid-render doesn't retroactively change what a completed job's
+    /// Snapshot of the timeline's fps at render-start time, so a fps edit
+    /// mid-render doesn't retroactively change what a completed job's
     /// "Stitch to video" step uses.
     pub fps: u32,
     /// Snapshot of `FractalApp::overlay` at render-start time, for the same
@@ -57,22 +53,6 @@ pub struct ExportState {
     pub height: u32,
     pub supersample: u32,
     pub status: Option<String>,
-    /// Sorted ascending by `frame`. Always has at least 2 entries — the
-    /// first pinned at frame 0, the last at `anim_frame_count - 1` (kept in
-    /// sync by `apply_frame_count`). Middle keyframes (added via the
-    /// timeline's "+ Add keyframe") are freely repositionable between their
-    /// neighbors.
-    pub anim_keyframes: Vec<Keyframe>,
-    pub anim_selected_keyframe: usize,
-    /// The 3D camera path's keyframes, under the same invariants as
-    /// `anim_keyframes`. Empty until the 3D animation section is first
-    /// shown, which seeds it from the current camera.
-    pub anim3d_keyframes: Vec<CameraKeyframe>,
-    pub anim3d_selected_keyframe: usize,
-    /// The 3D path's scrub-slider position.
-    pub anim3d_scrub_frame: u32,
-    pub anim_frame_count: u32,
-    pub anim_fps: u32,
     pub anim_job: Option<AnimationJob>,
     pub last_animation: Option<CompletedAnimation>,
     pub ffmpeg_status: Option<String>,
@@ -85,16 +65,6 @@ impl Default for ExportState {
             height: 1080,
             supersample: 2,
             status: None,
-            anim_keyframes: vec![
-                Keyframe { frame: 0, zoom: 1.0, kind_param: KindParam::None, easing: Easing::Linear },
-                Keyframe { frame: 119, zoom: 1000.0, kind_param: KindParam::None, easing: Easing::Linear },
-            ],
-            anim_selected_keyframe: 0,
-            anim3d_keyframes: Vec::new(),
-            anim3d_selected_keyframe: 0,
-            anim3d_scrub_frame: 0,
-            anim_frame_count: 120,
-            anim_fps: 30,
             anim_job: None,
             last_animation: None,
             ffmpeg_status: None,
@@ -163,127 +133,58 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
     });
 }
 
-/// Keeps every keyframe's kind-param in sync with whatever the current
-/// fractal kind actually animates. Without this, switching fractal kind
-/// (e.g. Julia -> Mandelbrot -> Multibrot) via the Fractal tab would leave
-/// stale `KindParam::Seed`s sitting in keyframes for a kind that doesn't
-/// have a seed, silently doing nothing when the timeline is built.
-fn sync_kind_param_defaults(app: &mut FractalApp) {
-    let current = app.params.kind.animatable_param();
-    let same_variant =
-        |a: KindParam, b: KindParam| std::mem::discriminant(&a) == std::mem::discriminant(&b);
-    for kf in &mut app.export.anim_keyframes {
-        if !same_variant(kf.kind_param, current) {
-            kf.kind_param = current;
-        }
-    }
-}
-
-/// Applies a `anim_frame_count` change: moves the last keyframe to the new
-/// final frame, and clamps any middle keyframes that would otherwise end up
-/// past it (the first keyframe always stays pinned at frame 0).
-pub(crate) fn fit_keyframes_to_frame_count<K: TimelineKey>(keyframes: &mut [K], frame_count: u32) {
-    let last_frame = frame_count.saturating_sub(1);
-    let n = keyframes.len();
-    if n == 0 {
-        return;
-    }
-    if let Some(last) = keyframes.last_mut() {
-        last.set_frame(last_frame);
-    }
-    for kf in keyframes[..n - 1].iter_mut().skip(1) {
-        kf.set_frame(kf.frame().min(last_frame.saturating_sub(1)));
-    }
-}
-
-fn apply_frame_count(app: &mut FractalApp) {
-    fit_keyframes_to_frame_count(&mut app.export.anim_keyframes, app.export.anim_frame_count);
-    fit_keyframes_to_frame_count(&mut app.export.anim3d_keyframes, app.export.anim_frame_count);
-}
-
-/// What the timeline strip needs from a keyframe — shared by the 2D
-/// zoom/parameter keyframes and the 3D camera keyframes.
-pub(crate) trait TimelineKey {
-    fn frame(&self) -> u32;
-    fn set_frame(&mut self, frame: u32);
-}
-
-impl TimelineKey for Keyframe {
-    fn frame(&self) -> u32 {
-        self.frame
-    }
-    fn set_frame(&mut self, frame: u32) {
-        self.frame = frame;
-    }
-}
-
-impl TimelineKey for CameraKeyframe {
-    fn frame(&self) -> u32 {
-        self.frame
-    }
-    fn set_frame(&mut self, frame: u32) {
-        self.frame = frame;
-    }
-}
-
+/// Renders the timeline's frame range (keyframes and range are edited in
+/// the timeline below the viewport).
 fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
     run_animation_step(ui, app);
 
-    if app.export.anim_job.is_none() {
-        if !app.is_3d() {
-            sync_kind_param_defaults(app);
+    if let Some(job) = &app.export.anim_job {
+        let total = job.frames.len().max(1);
+        let progress = job.next_index as f32 / total as f32;
+        ui.add(egui::ProgressBar::new(progress).text(format!("{}/{}", job.next_index, job.frames.len())));
+        if ui.button("Cancel").clicked() {
+            app.export.anim_job = None;
         }
-
-        ui.horizontal(|ui| {
-            ui.label("Frame count:");
-            let frame_count_response =
-                ui.add(egui::DragValue::new(&mut app.export.anim_frame_count).range(2..=10_000));
-            // Only reclamp keyframes once editing actually settles (drag
-            // released, or the text field loses focus), not on every
-            // `.changed()` — DragValue's text-entry mode fires `.changed()`
-            // per keystroke, so typing "12" transiently passes through "1"
-            // (frame_count=1); reclamping there would permanently collapse
-            // any middle keyframe to frame 0 via the one-way `.min()` below,
-            // with no way to recover once the field settles back at "12".
-            if frame_count_response.drag_stopped() || frame_count_response.lost_focus() {
-                apply_frame_count(app);
-            }
-            ui.label("FPS:");
-            ui.add(egui::DragValue::new(&mut app.export.anim_fps).range(1..=240));
-        });
-        ui.label(
-            egui::RichText::new(format!(
-                "~{:.1}s video at {} fps",
-                f64::from(app.export.anim_frame_count) / f64::from(app.export.anim_fps),
-                app.export.anim_fps
-            ))
-            .color(theme::TEXT_WEAK)
-            .small(),
-        );
-
-        ui.add_space(6.0);
-        if app.is_3d() {
-            camera_path_panel::show(ui, app);
+    } else {
+        let t = &app.timeline;
+        ui.label(format!(
+            "Frames {}–{} ({} frames, {:.1} s at {} fps)",
+            t.start,
+            t.end,
+            t.frame_count(),
+            f64::from(t.frame_count()) / f64::from(t.fps),
+            t.fps
+        ));
+        let key_count = if app.is_3d() { t.keys_3d.len() } else { t.keys_2d.len() };
+        let hint = if key_count == 0 {
+            "No keyframes yet: every frame would show the current view. Key views in the timeline (I)."
         } else {
-            timeline_strip(ui, &mut app.export.anim_keyframes, &mut app.export.anim_selected_keyframe, "timeline_kf");
-            if ui.small_button("+ Add keyframe").clicked() {
-                add_keyframe(app);
+            "Set the range and keyframes in the timeline below the viewport."
+        };
+        ui.label(egui::RichText::new(hint).color(theme::TEXT_WEAK).small());
+        if app.is_3d() && !app.timeline.keys_3d.is_empty() {
+            let blocked = app.camera_path().blocked_frames(app.timeline.range());
+            if !blocked.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "⚠ The camera path passes through the fractal at frames {}.",
+                        timeline::frame_ranges(&blocked)
+                    ))
+                    .color(theme::ACCENT)
+                    .small(),
+                );
             }
-
-            ui.add_space(6.0);
-            ui.separator();
-            show_selected_keyframe_editor(ui, app);
         }
 
         ui.add_space(4.0);
         if ui.button("Render Animation...").clicked()
             && let Some(dir) = rfd::FileDialog::new().pick_folder()
         {
+            let range = app.timeline.range();
             let frames = if app.is_3d() {
-                app.camera_path().generate_frames().into_iter().map(FrameParams::Volume).collect()
+                app.camera_path().frames_in_range(range).into_iter().map(FrameParams::Volume).collect()
             } else {
-                let timeline = Timeline { base: app.params.clone(), keyframes: app.export.anim_keyframes.clone() };
-                timeline.generate_frames().into_iter().map(FrameParams::Plane).collect()
+                app.timeline_2d().frames_in_range(range).into_iter().map(FrameParams::Plane).collect()
             };
             app.export.anim_job = Some(AnimationJob {
                 frames,
@@ -292,18 +193,11 @@ fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
                 width: app.export.width,
                 height: app.export.height,
                 supersample: app.export.supersample,
-                fps: app.export.anim_fps,
+                fps: app.timeline.fps,
                 overlay: app.overlay,
             });
             app.export.last_animation = None;
             app.export.ffmpeg_status = None;
-        }
-    } else if let Some(job) = &app.export.anim_job {
-        let total = job.frames.len().max(1);
-        let progress = job.next_index as f32 / total as f32;
-        ui.add(egui::ProgressBar::new(progress).text(format!("{}/{}", job.next_index, job.frames.len())));
-        if ui.button("Cancel").clicked() {
-            app.export.anim_job = None;
         }
     }
 
@@ -313,190 +207,6 @@ fn show_animation_section(ui: &mut egui::Ui, app: &mut FractalApp) {
 
     if app.export.anim_job.is_none() {
         show_ffmpeg_stitch_controls(ui, app);
-    }
-}
-
-/// A horizontal strip spanning frame 0 to the last keyframe's frame, with a
-/// draggable marker per keyframe (click to select; drag to reposition — the
-/// first/last markers are pinned, since they define the animation's start
-/// and total length rather than a point along it).
-pub(crate) fn timeline_strip<K: TimelineKey>(
-    ui: &mut egui::Ui,
-    keyframes: &mut [K],
-    selected: &mut usize,
-    id_salt: &str,
-) {
-    let bar_height = 28.0;
-    let desired_size = egui::vec2(ui.available_width(), bar_height);
-    let (rect, _response) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
-
-    ui.painter().rect_filled(rect, 4.0, theme::section_bg());
-    ui.painter().line_segment(
-        [egui::pos2(rect.left(), rect.center().y), egui::pos2(rect.right(), rect.center().y)],
-        egui::Stroke::new(1.5, theme::TEXT_WEAK),
-    );
-
-    let n = keyframes.len();
-    let last_frame = keyframes.last().map(|k| k.frame()).unwrap_or(1).max(1);
-    let marker_radius = 7.0;
-
-    for i in 0..n {
-        let frame = keyframes[i].frame();
-        let x = rect.left() + (frame as f32 / last_frame as f32) * rect.width();
-        let marker_center = egui::pos2(x, rect.center().y);
-        let marker_rect =
-            egui::Rect::from_center_size(marker_center, egui::vec2(marker_radius * 2.0, marker_radius * 2.0));
-        let marker_id = ui.id().with(id_salt).with(i);
-        let draggable = i != 0 && i != n - 1;
-        let sense = if draggable { egui::Sense::click_and_drag() } else { egui::Sense::click() };
-        let marker_response = ui.interact(marker_rect, marker_id, sense);
-
-        let is_selected = *selected == i;
-        ui.painter().circle(
-            marker_center,
-            marker_radius,
-            if is_selected { theme::ACCENT } else { theme::TEXT_WEAK },
-            egui::Stroke::new(2.0, if is_selected { egui::Color32::WHITE } else { egui::Color32::from_gray(60) }),
-        );
-
-        if marker_response.clicked() {
-            *selected = i;
-        }
-        if draggable && marker_response.dragged() && rect.width() > 0.0 {
-            let delta_frames = (marker_response.drag_delta().x / rect.width()) * last_frame as f32;
-            let lower = keyframes[i - 1].frame() + 1;
-            let upper = keyframes[i + 1].frame().saturating_sub(1).max(lower);
-            let new_frame =
-                (keyframes[i].frame() as f32 + delta_frames).round().clamp(lower as f32, upper as f32) as u32;
-            keyframes[i].set_frame(new_frame);
-            *selected = i;
-        }
-    }
-}
-
-/// Inserts a new keyframe into the gap after the selected one (or before the
-/// last, if the selected keyframe already is the last), seeding its zoom
-/// and kind-param from the existing curve at that frame so it doesn't
-/// create a visible jump. No-op if there's no room left in that gap.
-fn add_keyframe(app: &mut FractalApp) {
-    let n = app.export.anim_keyframes.len();
-    let insert_after = app.export.anim_selected_keyframe.min(n.saturating_sub(2));
-    let a = app.export.anim_keyframes[insert_after].frame;
-    let b = app.export.anim_keyframes[insert_after + 1].frame;
-    if b <= a + 1 {
-        return;
-    }
-    let mid_frame = a + (b - a) / 2;
-
-    let timeline = Timeline { base: app.params.clone(), keyframes: app.export.anim_keyframes.clone() };
-    let (zoom, kind_param) = timeline.value_at_frame(mid_frame);
-
-    app.export.anim_keyframes.insert(insert_after + 1, Keyframe { frame: mid_frame, zoom, kind_param, easing: Easing::Linear });
-    app.export.anim_selected_keyframe = insert_after + 1;
-}
-
-fn remove_selected_keyframe(app: &mut FractalApp) {
-    let n = app.export.anim_keyframes.len();
-    let selected = app.export.anim_selected_keyframe;
-    if n <= 2 || selected == 0 {
-        return;
-    }
-    app.export.anim_keyframes.remove(selected);
-    app.export.anim_selected_keyframe = selected.min(app.export.anim_keyframes.len() - 1);
-}
-
-fn show_selected_keyframe_editor(ui: &mut egui::Ui, app: &mut FractalApp) {
-    let n = app.export.anim_keyframes.len();
-    let selected = app.export.anim_selected_keyframe.min(n - 1);
-    app.export.anim_selected_keyframe = selected;
-    let is_first = selected == 0;
-    let is_last = selected == n - 1;
-
-    ui.label(
-        egui::RichText::new(if is_first { "Start keyframe" } else if is_last { "End keyframe" } else { "Keyframe" })
-            .strong(),
-    );
-
-    ui.horizontal(|ui| {
-        ui.label("Zoom:");
-        let mut zoom = app.export.anim_keyframes[selected].zoom;
-        if ui.add(egui::DragValue::new(&mut zoom).range(0.01..=MAX_INTERACTIVE_ZOOM).speed(1.0)).changed() {
-            app.export.anim_keyframes[selected].zoom = zoom;
-        }
-        if ui.small_button("Use current").clicked() {
-            app.export.anim_keyframes[selected].zoom = app.params.zoom;
-        }
-    });
-
-    match app.params.kind.animatable_param() {
-        KindParam::None => {}
-        KindParam::Seed(current_seed) => {
-            if let KindParam::Seed(mut seed) = app.export.anim_keyframes[selected].kind_param {
-                ui.horizontal(|ui| {
-                    ui.label("Seed:");
-                    let mut changed = false;
-                    changed |= ui.add(egui::DragValue::new(&mut seed[0]).speed(0.001).prefix("re ")).changed();
-                    changed |= ui.add(egui::DragValue::new(&mut seed[1]).speed(0.001).prefix("im ")).changed();
-                    if changed {
-                        app.export.anim_keyframes[selected].kind_param = KindParam::Seed(seed);
-                    }
-                    if ui.small_button("Use current").clicked() {
-                        app.export.anim_keyframes[selected].kind_param = KindParam::Seed(current_seed);
-                    }
-                });
-            }
-        }
-        KindParam::Power(current_power) => {
-            if let KindParam::Power(mut power) = app.export.anim_keyframes[selected].kind_param {
-                ui.horizontal(|ui| {
-                    ui.label("Power:");
-                    if ui.add(egui::DragValue::new(&mut power).range(2.0..=8.0).speed(0.05)).changed() {
-                        app.export.anim_keyframes[selected].kind_param = KindParam::Power(power);
-                    }
-                    if ui.small_button("Use current").clicked() {
-                        app.export.anim_keyframes[selected].kind_param = KindParam::Power(current_power);
-                    }
-                });
-            }
-        }
-    }
-
-    if !is_first {
-        // Easing governs the segment leading INTO this keyframe from the
-        // previous one — meaningless on the first keyframe, since no
-        // segment precedes it.
-        easing_editor(ui, &mut app.export.anim_keyframes[selected].easing, ("kf_easing", selected));
-    }
-
-    let can_remove = n > 2 && !is_first;
-    if ui.add_enabled(can_remove, egui::Button::new("Remove keyframe")).clicked() {
-        remove_selected_keyframe(app);
-    }
-}
-
-/// Pacing of the segment leading into a keyframe.
-pub(crate) fn easing_editor(ui: &mut egui::Ui, easing: &mut Easing, id_salt: impl std::hash::Hash + std::fmt::Debug) {
-    let easing_name = match easing {
-        Easing::Linear => "Linear",
-        Easing::Accelerating { .. } => "Accelerating",
-    };
-    ui.horizontal(|ui| {
-        ui.label("Easing in:");
-        egui::ComboBox::from_id_salt(id_salt).selected_text(easing_name).show_ui(ui, |ui| {
-            if ui.selectable_label(matches!(easing, Easing::Linear), "Linear").clicked() {
-                *easing = Easing::Linear;
-            }
-            if ui.selectable_label(matches!(easing, Easing::Accelerating { .. }), "Accelerating").clicked() {
-                *easing = Easing::Accelerating { exponent: 2.0 };
-            }
-        });
-    });
-    if let Easing::Accelerating { exponent } = easing {
-        ui.horizontal(|ui| {
-            ui.label("Acceleration:");
-            ui.add(egui::DragValue::new(exponent).range(0.2..=5.0).speed(0.05))
-                .on_hover_text("Above 1 starts slow and speeds up; below 1 starts fast and slows down.");
-        });
     }
 }
 

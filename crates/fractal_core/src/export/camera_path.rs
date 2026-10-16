@@ -87,11 +87,19 @@ impl CameraPath {
             .collect()
     }
 
-    /// Frames at which the camera would sit inside the fractal's solid
-    /// (clearance ≤ 0) — the spline between two free keyframes can cut
-    /// through a wall, and those frames render as a screen full of surface.
-    pub fn blocked_frames(&self) -> Vec<u32> {
-        (0..=self.last_frame())
+    /// One [`Params3D`] per frame of `frames` — the render range, which may
+    /// extend before the first or past the last keyframe (the camera holds
+    /// there).
+    pub fn frames_in_range(&self, frames: std::ops::RangeInclusive<u32>) -> Vec<Params3D> {
+        frames.map(|frame| Params3D { camera: self.camera_at_frame(frame), ..self.base.clone() }).collect()
+    }
+
+    /// Frames of `frames` at which the camera would sit inside the
+    /// fractal's solid (clearance ≤ 0) — the spline between two free
+    /// keyframes can cut through a wall, and those frames render as a
+    /// screen full of surface.
+    pub fn blocked_frames(&self, frames: std::ops::RangeInclusive<u32>) -> Vec<u32> {
+        frames
             .filter(|&frame| {
                 let params = Params3D { camera: self.camera_at_frame(frame), ..self.base.clone() };
                 params.camera_clearance() <= 0.0
@@ -323,12 +331,26 @@ mod tests {
     }
 
     #[test]
+    fn render_range_holds_the_camera_outside_the_keyframes() {
+        let a = cam([0.0, 0.0, -5.0], 0.2);
+        let b = cam([1.0, 0.0, -3.0], 0.4);
+        let path = path(vec![key(10, a), key(20, b)]);
+        let frames = path.frames_in_range(0..=30);
+        assert_eq!(frames.len(), 31);
+        assert!(close(frames[0].camera.position, a.position) && close(frames[10].camera.position, a.position));
+        assert!(close(frames[30].camera.position, b.position));
+        // An empty path renders the base camera.
+        let empty = CameraPath { base: Params3D::new(MANDELBOX_DEFAULT), keyframes: Vec::new() };
+        assert_eq!(empty.frames_in_range(0..=2)[1].camera, empty.base.camera);
+    }
+
+    #[test]
     fn blocked_frames_flags_a_path_through_the_bulb() {
         let path = CameraPath {
             base: Params3D::new(MANDELBULB_DEFAULT),
             keyframes: vec![key(0, cam([0.0, 0.0, -3.0], 0.0)), key(20, cam([0.0, 0.0, 3.0], 0.0))],
         };
-        let blocked = path.blocked_frames();
+        let blocked = path.blocked_frames(0..=20);
         assert!(!blocked.is_empty());
         assert!(!blocked.contains(&0) && !blocked.contains(&20));
         assert!(blocked.contains(&10), "the midpoint is the bulb's center: {blocked:?}");
