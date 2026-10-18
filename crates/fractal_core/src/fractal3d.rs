@@ -26,11 +26,23 @@ const UNBOUNDED_RADIUS: f64 = 1000.0;
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Formula3D {
     /// White/Nylander's power-`power` bulb, iterated in spherical coordinates.
-    Mandelbulb { power: f64 },
+    /// With a `julia` seed, `c` is that fixed point instead of the point
+    /// being rendered — the bulb's Julia sets ("Juliabulbs").
+    Mandelbulb {
+        power: f64,
+        #[serde(default)]
+        julia: Option<[f64; 3]>,
+    },
     /// Tom Lowe's Mandelbox: a box fold, a sphere fold, then `z = scale·z + c`.
     /// Negative scales (around −1.5) give the cave-like interiors best suited
-    /// to flying through.
-    Mandelbox { scale: f64, min_radius: f64, fixed_radius: f64 },
+    /// to flying through. With a `julia` seed, `c` is that fixed point.
+    Mandelbox {
+        scale: f64,
+        min_radius: f64,
+        fixed_radius: f64,
+        #[serde(default)]
+        julia: Option<[f64; 3]>,
+    },
     /// A kaleidoscopic IFS: fold into one octant, sort the coordinates,
     /// rotate, then scale away from `offset`; the base shape is a cube. The
     /// defaults (scale 3, offset 1, no rotation) give exactly the Menger
@@ -47,10 +59,15 @@ pub enum Formula3D {
     QuaternionJulia { c: [f64; 4], slice: f64 },
 }
 
-pub const MANDELBULB_DEFAULT: Formula3D = Formula3D::Mandelbulb { power: 8.0 };
+pub const MANDELBULB_DEFAULT: Formula3D = Formula3D::Mandelbulb { power: 8.0, julia: None };
 pub const QUATERNION_JULIA_DEFAULT: Formula3D =
     Formula3D::QuaternionJulia { c: [-0.291, -0.399, 0.339, 0.437], slice: 0.0 };
-pub const MANDELBOX_DEFAULT: Formula3D = Formula3D::Mandelbox { scale: -1.5, min_radius: 0.5, fixed_radius: 1.0 };
+pub const MANDELBOX_DEFAULT: Formula3D =
+    Formula3D::Mandelbox { scale: -1.5, min_radius: 0.5, fixed_radius: 1.0, julia: None };
+/// Seeds that give a good first look when Julia mode is switched on (see
+/// [`Formula3D::with_julia`]).
+pub const MANDELBULB_JULIA_SEED: [f64; 3] = [-0.6, 0.6, 0.4];
+pub const MANDELBOX_JULIA_SEED: [f64; 3] = [1.2, -0.6, 0.4];
 pub const KIFS_DEFAULT: Formula3D =
     Formula3D::Kifs { scale: 3.0, offset: [1.0, 1.0, 1.0], rotation_degrees: [0.0, 0.0] };
 pub const PSEUDO_KLEINIAN_DEFAULT: Formula3D =
@@ -68,11 +85,19 @@ impl Formula3D {
     }
 
     /// The formula's numeric parameters, flattened — for interpolating
-    /// between keyframes. [`Self::with_parameters`] is the inverse.
+    /// between keyframes. [`Self::with_parameters`] is the inverse. A Julia
+    /// seed adds three values, so two formulas only interpolate when they
+    /// agree on Julia mode (same length).
     pub fn parameters(self) -> Vec<f64> {
+        let with_seed = |mut v: Vec<f64>, julia: Option<[f64; 3]>| {
+            v.extend(julia.into_iter().flatten());
+            v
+        };
         match self {
-            Formula3D::Mandelbulb { power } => vec![power],
-            Formula3D::Mandelbox { scale, min_radius, fixed_radius } => vec![scale, min_radius, fixed_radius],
+            Formula3D::Mandelbulb { power, julia } => with_seed(vec![power], julia),
+            Formula3D::Mandelbox { scale, min_radius, fixed_radius, julia } => {
+                with_seed(vec![scale, min_radius, fixed_radius], julia)
+            }
             Formula3D::Kifs { scale, offset, rotation_degrees } => {
                 vec![scale, offset[0], offset[1], offset[2], rotation_degrees[0], rotation_degrees[1]]
             }
@@ -89,9 +114,13 @@ impl Formula3D {
         if v.len() < self.parameters().len() {
             return self;
         }
+        // The seed, if this formula has one, follows its own parameters.
+        let seed = |julia: Option<[f64; 3]>, at: usize| julia.map(|_| [v[at], v[at + 1], v[at + 2]]);
         match self {
-            Formula3D::Mandelbulb { .. } => Formula3D::Mandelbulb { power: v[0] },
-            Formula3D::Mandelbox { .. } => Formula3D::Mandelbox { scale: v[0], min_radius: v[1], fixed_radius: v[2] },
+            Formula3D::Mandelbulb { julia, .. } => Formula3D::Mandelbulb { power: v[0], julia: seed(julia, 1) },
+            Formula3D::Mandelbox { julia, .. } => {
+                Formula3D::Mandelbox { scale: v[0], min_radius: v[1], fixed_radius: v[2], julia: seed(julia, 3) }
+            }
             Formula3D::Kifs { .. } => {
                 Formula3D::Kifs { scale: v[0], offset: [v[1], v[2], v[3]], rotation_degrees: [v[4], v[5]] }
             }
@@ -99,6 +128,57 @@ impl Formula3D {
                 Formula3D::PseudoKleinian { box_size: [v[0], v[1], v[2]], size: v[3], thickness: v[4] }
             }
             Formula3D::QuaternionJulia { .. } => Formula3D::QuaternionJulia { c: [v[0], v[1], v[2], v[3]], slice: v[4] },
+        }
+    }
+
+    /// Half-size of the cube a Mandelbox fits in, or `None` when |scale| is
+    /// too close to 1 for it to be bounded. A coordinate beyond `h` grows
+    /// every iteration once |s|·(h − 2) − |c| > h: with `c` the point
+    /// itself that gives the classic 2(|s|+1)/(|s|−1), with a fixed Julia
+    /// seed (2|s| + |c|)/(|s|−1).
+    fn mandelbox_half_size(self) -> Option<f64> {
+        let Formula3D::Mandelbox { scale, julia, .. } = self else { return None };
+        let s = scale.abs();
+        if s <= 1.01 {
+            return None;
+        }
+        Some(match julia {
+            None => 2.0 * (s + 1.0) / (s - 1.0),
+            Some(seed) => (2.0 * s + length(seed)) / (s - 1.0),
+        })
+    }
+
+    /// Whether this formula adds the rendered point as `c` each iteration,
+    /// and so has a Julia variant with a fixed seed.
+    pub fn supports_julia(self) -> bool {
+        matches!(self, Formula3D::Mandelbulb { .. } | Formula3D::Mandelbox { .. })
+    }
+
+    pub fn julia_seed(self) -> Option<[f64; 3]> {
+        match self {
+            Formula3D::Mandelbulb { julia, .. } | Formula3D::Mandelbox { julia, .. } => julia,
+            _ => None,
+        }
+    }
+
+    /// Switches Julia mode on (with the given seed) or off; formulas
+    /// without a Julia variant are returned unchanged.
+    pub fn with_julia(self, seed: Option<[f64; 3]>) -> Self {
+        match self {
+            Formula3D::Mandelbulb { power, .. } => Formula3D::Mandelbulb { power, julia: seed },
+            Formula3D::Mandelbox { scale, min_radius, fixed_radius, .. } => {
+                Formula3D::Mandelbox { scale, min_radius, fixed_radius, julia: seed }
+            }
+            other => other,
+        }
+    }
+
+    /// A seed that gives a good first look when Julia mode is switched on.
+    pub fn default_julia_seed(self) -> Option<[f64; 3]> {
+        match self {
+            Formula3D::Mandelbulb { .. } => Some(MANDELBULB_JULIA_SEED),
+            Formula3D::Mandelbox { .. } => Some(MANDELBOX_JULIA_SEED),
+            _ => None,
         }
     }
 
@@ -116,17 +196,13 @@ impl Formula3D {
     /// fractal, used to cap how far a ray marches.
     pub fn bounding_radius(self) -> f64 {
         match self {
-            Formula3D::Mandelbulb { .. } => 1.5,
-            Formula3D::Mandelbox { scale, .. } => {
-                let s = scale.abs();
-                // The Mandelbox fits in a cube of half-size 2(|s|+1)/(|s|−1);
-                // that blows up as |s| → 1, where the set itself does too.
-                if s > 1.01 {
-                    (2.0 * (s + 1.0) / (s - 1.0) * 3f64.sqrt()).min(UNBOUNDED_RADIUS)
-                } else {
-                    UNBOUNDED_RADIUS
-                }
-            }
+            Formula3D::Mandelbulb { julia: None, .. } => 1.5,
+            // Julia sets reach out to the iteration's escape radius (2).
+            Formula3D::Mandelbulb { julia: Some(_), .. } => BULB_BAILOUT,
+            Formula3D::Mandelbox { .. } => match self.mandelbox_half_size() {
+                Some(half) => (half * 3f64.sqrt()).min(UNBOUNDED_RADIUS),
+                None => UNBOUNDED_RADIUS,
+            },
             // The attractor stays within the offset's reach of the origin;
             // doubled for the slack rotation adds.
             Formula3D::Kifs { offset, .. } => 2.0 * length(offset).max(1.0),
@@ -148,6 +224,10 @@ impl Formula3D {
             Formula3D::Mandelbulb { .. } => [0.0, 0.0, -2.6],
             // Positive scales fill the whole 2(s+1)/(s−1) cube; negative
             // ones fold back into a body only about ±2 wide.
+            // A Julia Mandelbox fills most of its cube, so step back from it.
+            Formula3D::Mandelbox { julia: Some(_), .. } => {
+                [0.0, 0.0, -1.6 * self.mandelbox_half_size().unwrap_or(4.0)]
+            }
             Formula3D::Mandelbox { scale, .. } if scale > 1.01 => {
                 [0.0, 0.0, -2.0 * (scale + 1.0) / (scale - 1.0) * 1.8]
             }
@@ -163,9 +243,9 @@ impl Formula3D {
     /// smallest `|z|²` the iteration reached, used for coloring.
     pub fn estimate(self, p: [f64; 3], max_iterations: u32) -> (f64, f64) {
         match self {
-            Formula3D::Mandelbulb { power } => mandelbulb_de(p, power, max_iterations),
-            Formula3D::Mandelbox { scale, min_radius, fixed_radius } => {
-                mandelbox_de(p, scale, min_radius, fixed_radius, max_iterations)
+            Formula3D::Mandelbulb { power, julia } => mandelbulb_de(p, power, julia, max_iterations),
+            Formula3D::Mandelbox { scale, min_radius, fixed_radius, julia } => {
+                mandelbox_de(p, scale, min_radius, fixed_radius, julia, max_iterations)
             }
             Formula3D::Kifs { scale, offset, rotation_degrees } => {
                 kifs_de(p, scale, offset, kifs_rotation(rotation_degrees), max_iterations)
@@ -240,7 +320,18 @@ pub fn kifs_rotation(rotation_degrees: [f64; 2]) -> [[f64; 3]; 3] {
     [[cb, -sb * ca, sb * sa], [sb, cb * ca, -cb * sa], [0.0, sa, ca]]
 }
 
-fn mandelbulb_de(p: [f64; 3], power: f64, max_iterations: u32) -> (f64, f64) {
+/// The `c` added each iteration, and its derivative with respect to the
+/// point: the point itself (derivative 1) for the classic sets, or a fixed
+/// Julia seed (derivative 0), which drops the `+ 1` from the DE recurrence.
+fn julia_addend(p: [f64; 3], julia: Option<[f64; 3]>) -> ([f64; 3], f64) {
+    match julia {
+        Some(seed) => (seed, 0.0),
+        None => (p, 1.0),
+    }
+}
+
+fn mandelbulb_de(p: [f64; 3], power: f64, julia: Option<[f64; 3]>, max_iterations: u32) -> (f64, f64) {
+    let (c, dc) = julia_addend(p, julia);
     let mut z = p;
     let mut dr = 1.0;
     let mut r = length(z);
@@ -252,27 +343,35 @@ fn mandelbulb_de(p: [f64; 3], power: f64, max_iterations: u32) -> (f64, f64) {
         }
         let theta = (z[2] / r).clamp(-1.0, 1.0).acos() * power;
         let phi = z[1].atan2(z[0]) * power;
-        dr = r.powf(power - 1.0) * power * dr + 1.0;
+        dr = r.powf(power - 1.0) * power * dr + dc;
         let zr = r.powf(power);
         z = [
-            zr * theta.sin() * phi.cos() + p[0],
-            zr * theta.sin() * phi.sin() + p[1],
-            zr * theta.cos() + p[2],
+            zr * theta.sin() * phi.cos() + c[0],
+            zr * theta.sin() * phi.sin() + c[1],
+            zr * theta.cos() + c[2],
         ];
         trap = trap.min(dot(z, z));
     }
     (0.5 * r.max(1e-12).ln() * r / dr, trap)
 }
 
-fn mandelbox_de(p: [f64; 3], scale: f64, min_radius: f64, fixed_radius: f64, max_iterations: u32) -> (f64, f64) {
+fn mandelbox_de(
+    p: [f64; 3],
+    scale: f64,
+    min_radius: f64,
+    fixed_radius: f64,
+    julia: Option<[f64; 3]>,
+    max_iterations: u32,
+) -> (f64, f64) {
+    let (c, dc) = julia_addend(p, julia);
     let min_r2 = min_radius * min_radius;
     let fixed_r2 = fixed_radius * fixed_radius;
     let mut z = p;
     let mut dr = 1.0;
     let mut trap = f64::MAX;
     for _ in 0..max_iterations {
-        for c in &mut z {
-            *c = c.clamp(-1.0, 1.0) * 2.0 - *c;
+        for x in &mut z {
+            *x = x.clamp(-1.0, 1.0) * 2.0 - *x;
         }
         let r2 = dot(z, z);
         let k = if r2 < min_r2 {
@@ -282,9 +381,9 @@ fn mandelbox_de(p: [f64; 3], scale: f64, min_radius: f64, fixed_radius: f64, max
         } else {
             1.0
         };
-        dr = dr * k * scale.abs() + 1.0;
-        for (zc, pc) in z.iter_mut().zip(p) {
-            *zc = *zc * k * scale + pc;
+        dr = dr * k * scale.abs() + dc;
+        for (zc, cc) in z.iter_mut().zip(c) {
+            *zc = *zc * k * scale + cc;
         }
         trap = trap.min(r2);
         if dot(z, z) > BOX_BAILOUT_SQ {
@@ -739,8 +838,55 @@ mod tests {
     }
 
     #[test]
-    fn formula_parameters_round_trip_for_every_formula() {
+    fn julia_bulb_with_zero_seed_is_the_unit_sphere() {
+        // With c = 0 the bulb's map only takes r → r⁸: points inside the
+        // unit sphere stay bounded, points outside escape.
+        let julia = MANDELBULB_DEFAULT.with_julia(Some([0.0; 3]));
+        let de = julia.distance_estimate([0.0, 0.0, 3.0], 12);
+        assert!(de > 1.5 && de <= 2.0 + 1e-9, "{de}");
+        let near = julia.distance_estimate([1.05, 0.0, 0.0], 12);
+        assert!(near > 0.0 && near <= 0.05 + 1e-9, "{near}");
+        assert!(julia.distance_estimate([0.2, 0.3, -0.1], 12) < 0.0);
+    }
+
+    #[test]
+    fn julia_mode_toggles_only_where_supported() {
         for formula in ALL_DEFAULTS {
+            let seed = formula.default_julia_seed();
+            assert_eq!(seed.is_some(), formula.supports_julia());
+            let on = formula.with_julia(seed);
+            assert_eq!(on.julia_seed(), seed);
+            assert_eq!(on.with_julia(None), formula, "switching off restores the classic formula");
+        }
+        // A Julia seed really changes the shape.
+        let point = [0.3, 0.4, 0.5];
+        let classic = MANDELBOX_DEFAULT.distance_estimate(point, 12);
+        let julia = MANDELBOX_DEFAULT.with_julia(Some(MANDELBOX_JULIA_SEED)).distance_estimate(point, 12);
+        assert!((classic - julia).abs() > 1e-6);
+    }
+
+    #[test]
+    fn julia_default_cameras_start_in_free_space() {
+        for formula in [MANDELBULB_DEFAULT, MANDELBOX_DEFAULT] {
+            let mut params = Params3D::new(formula);
+            params.formula = formula.with_julia(formula.default_julia_seed());
+            params.camera = params.default_camera();
+            assert!(params.camera_clearance() > 0.1, "{}: {}", formula.display_name(), params.camera_clearance());
+        }
+    }
+
+    #[test]
+    fn formulas_saved_before_julia_mode_still_load() {
+        let bulb: Formula3D = ron::from_str("Mandelbulb(power: 8.0)").unwrap();
+        assert_eq!(bulb, MANDELBULB_DEFAULT);
+        let r#box: Formula3D = ron::from_str("Mandelbox(scale: -1.5, min_radius: 0.5, fixed_radius: 1.0)").unwrap();
+        assert_eq!(r#box, MANDELBOX_DEFAULT);
+    }
+
+    #[test]
+    fn formula_parameters_round_trip_for_every_formula() {
+        let julias = [MANDELBULB_DEFAULT, MANDELBOX_DEFAULT].map(|f| f.with_julia(f.default_julia_seed()));
+        for formula in ALL_DEFAULTS.into_iter().chain(julias) {
             let values = formula.parameters();
             let shifted: Vec<f64> = values.iter().map(|v| v + 0.25).collect();
             let changed = formula.with_parameters(&shifted);

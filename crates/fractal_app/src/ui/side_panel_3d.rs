@@ -24,6 +24,31 @@ fn vec3_editor(ui: &mut egui::Ui, label: &str, v: &mut [f64; 3], range: std::ops
     });
 }
 
+/// Julia mode for the formulas that add the point as `c` (Mandelbulb,
+/// Mandelbox): a fixed seed replaces the point.
+fn julia_controls(ui: &mut egui::Ui, params: &mut Params3D) {
+    let formula = params.formula;
+    if !formula.supports_julia() {
+        return;
+    }
+    ui.add_space(4.0);
+    let mut on = formula.julia_seed().is_some();
+    if ui
+        .checkbox(&mut on, "Julia mode")
+        .on_hover_text("Use a fixed seed c instead of each point — this formula's Julia sets.")
+        .changed()
+    {
+        let seed = if on { formula.default_julia_seed() } else { None };
+        params.formula = formula.with_julia(seed);
+        // The shape changes completely; start from a view that shows it.
+        params.camera = params.default_camera();
+    }
+    if let Some(mut seed) = params.formula.julia_seed() {
+        vec3_editor(ui, "Seed c:", &mut seed, -2.0..=2.0);
+        params.formula = params.formula.with_julia(Some(seed));
+    }
+}
+
 pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
     theme::section(ui, "Formula", |ui| {
         egui::ComboBox::from_label("Fractal type").selected_text(app.params3d.formula.display_name()).show_ui(
@@ -42,13 +67,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
         );
 
         match &mut app.params3d.formula {
-            Formula3D::Mandelbulb { power } => {
+            Formula3D::Mandelbulb { power, .. } => {
                 ui.horizontal(|ui| {
                     ui.label("Power:");
                     ui.add(egui::DragValue::new(power).range(2.0..=16.0).speed(0.02));
                 });
             }
-            Formula3D::Mandelbox { scale, min_radius, fixed_radius } => {
+            Formula3D::Mandelbox { scale, min_radius, fixed_radius, .. } => {
                 ui.horizontal(|ui| {
                     ui.label("Scale:");
                     ui.add(egui::DragValue::new(scale).range(-3.0..=3.0).speed(0.005))
@@ -103,6 +128,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
                 });
             }
         }
+        julia_controls(ui, &mut app.params3d);
         ui.label(
             egui::RichText::new("Keyframes (I) also store these parameters, so they can be animated.")
                 .color(theme::TEXT_WEAK)

@@ -172,13 +172,15 @@ pub fn describe(params: &FractalParams, detail: MathDetail) -> Vec<String> {
 pub fn describe_3d(params: &Params3D, detail: MathDetail) -> Vec<String> {
     let mut lines = Vec::new();
     match params.formula {
-        Formula3D::Mandelbulb { power } => {
+        Formula3D::Mandelbulb { power, julia } => {
             let p = format_scalar(power);
             lines.push(format!("z → {} + c   (r → {}, θ → {p}θ, φ → {p}φ)", power_of("z", power), power_of("r", power)));
-            lines.push("z₀ = c = point on the ray".to_string());
-            lines.push(format!("DE = 0.5·ln r·r / dr,   dr → {p}·{}·dr + 1", power_of("r", power - 1.0)));
+            lines.push(start_line(julia, detail));
+            // A fixed seed doesn't vary with the point: no "+ 1" term.
+            let plus_one = if julia.is_some() { "" } else { " + 1" };
+            lines.push(format!("DE = 0.5·ln r·r / dr,   dr → {p}·{}·dr{plus_one}", power_of("r", power - 1.0)));
         }
-        Formula3D::Mandelbox { scale, min_radius, fixed_radius } => {
+        Formula3D::Mandelbox { scale, min_radius, fixed_radius, julia } => {
             let values = detail != MathDetail::Formula;
             lines.push(if values {
                 format!("z → s·sphereFold(boxFold(z)) + c,   s = {}", format_scalar(scale))
@@ -195,7 +197,7 @@ pub fn describe_3d(params: &Params3D, detail: MathDetail) -> Vec<String> {
             } else {
                 "sphereFold: z·(R/m)² if r < m,  z·(R/r)² if r < R".to_string()
             });
-            lines.push("z₀ = c = point on the ray,   DE = |z| / |dr|".to_string());
+            lines.push(format!("{},   DE = |z| / |dr|", start_line(julia, detail)));
         }
         Formula3D::Kifs { scale, offset, rotation_degrees } => {
             lines.push("z → s·rot(sort(|z|)) − (s − 1)·o   (sorted x ≥ y ≥ z)".to_string());
@@ -288,6 +290,16 @@ fn power_of(base: &str, exponent: f64) -> String {
         format!("{base}{}", superscript(exponent as i64))
     } else {
         format!("{base}^{}", format_scalar(exponent))
+    }
+}
+
+/// Where the iteration starts and what `c` is: the point itself for the
+/// classic sets, a fixed seed in Julia mode.
+fn start_line(julia: Option<[f64; 3]>, detail: MathDetail) -> String {
+    match julia {
+        None => "z₀ = c = point on the ray".to_string(),
+        Some(_) if detail == MathDetail::Formula => "z₀ = point on the ray,   c = Julia seed".to_string(),
+        Some(seed) => format!("z₀ = point on the ray,   c = {} (Julia seed)", format_vec3(seed)),
     }
 }
 
@@ -485,6 +497,17 @@ mod tests {
         let values = describe_3d(&params, MathDetail::Full);
         assert!(values[0].ends_with("s = −1.5"));
         assert!(values.iter().any(|l| l.starts_with("fog = ")));
+    }
+
+    #[test]
+    fn julia_mode_lines_state_the_seed_and_drop_the_plus_one() {
+        let mut params = Params3D::new(crate::fractal3d::MANDELBULB_DEFAULT);
+        params.formula = params.formula.with_julia(Some([0.35, 0.35, -0.35]));
+        let lines = describe_3d(&params, MathDetail::Values);
+        assert_eq!(lines[1], "z₀ = point on the ray,   c = (0.35, 0.35, −0.35) (Julia seed)");
+        assert_eq!(lines[2], "DE = 0.5·ln r·r / dr,   dr → 8·r⁷·dr");
+        let formula_only = describe_3d(&params, MathDetail::Formula);
+        assert_eq!(formula_only[1], "z₀ = point on the ray,   c = Julia seed");
     }
 
     #[test]

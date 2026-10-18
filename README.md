@@ -18,8 +18,9 @@ Blender-inspired dark UI.
   distance-estimator shading mode that reveals fine boundary detail.
 - **Interactive viewport**: pan/zoom-at-cursor, click-to-seed Julia sets.
 - **3D fractals**: ray-marched Mandelbox, Mandelbulb, Menger sponge/KIFS,
-  pseudo-Kleinian, and quaternion Julia sets, plus a sphere-inversion
-  mode that turns any of them inside out into a closed cave. A fly camera (W/A/S/D/Q/E, drag to
+  pseudo-Kleinian, and quaternion Julia sets, Julia variants of the
+  Mandelbulb and Mandelbox, plus a sphere-inversion mode that turns any of
+  them inside out into a closed cave. A fly camera (W/A/S/D/Q/E, drag to
   look, Z/C to tilt) travels through their caves and corridors without
   passing through walls.
 - **Math overlay**: the formula and the actual values behind the current

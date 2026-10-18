@@ -153,7 +153,7 @@ mod tests {
         }
         let formulas = [
             MANDELBULB_DEFAULT,
-            Formula3D::Mandelbulb { power: 7.5 },
+            Formula3D::Mandelbulb { power: 7.5, julia: Some([0.35, 0.35, -0.35]) },
             MANDELBOX_DEFAULT,
             KIFS_DEFAULT,
             PSEUDO_KLEINIAN_DEFAULT,

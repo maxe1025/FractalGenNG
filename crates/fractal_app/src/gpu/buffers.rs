@@ -141,9 +141,9 @@ impl RayUniforms {
         // `Params3D::fog_distance`); the shader wants world units.
         let fog = if params.fog_distance > 0.0 { params.fog_distance * params.camera_clearance().max(1e-9) } else { 0.0 };
         let (params_a, params_b) = match params.formula {
-            Formula3D::Mandelbulb { power } => ([power, 0.0, 0.0, 0.0], [0.0; 4]),
-            Formula3D::Mandelbox { scale, min_radius, fixed_radius } => {
-                ([scale, min_radius, fixed_radius, 0.0], [0.0; 4])
+            Formula3D::Mandelbulb { power, julia } => ([power, 0.0, 0.0, 0.0], julia_params(julia)),
+            Formula3D::Mandelbox { scale, min_radius, fixed_radius, julia } => {
+                ([scale, min_radius, fixed_radius, 0.0], julia_params(julia))
             }
             Formula3D::Kifs { scale, offset, rotation_degrees } => (
                 [scale, offset[0], offset[1], offset[2]],
@@ -172,5 +172,13 @@ impl RayUniforms {
             background: [bg[0] as f32 / 255.0, bg[1] as f32 / 255.0, bg[2] as f32 / 255.0, 1.0],
             counts: [params.formula.shader_id(), params.max_iterations, params.max_steps, stop_count],
         }
+    }
+}
+
+/// `params_b` for the Mandelbulb/Mandelbox: the Julia seed and an on-flag.
+fn julia_params(julia: Option<[f64; 3]>) -> [f64; 4] {
+    match julia {
+        Some([x, y, z]) => [x, y, z, 1.0],
+        None => [0.0; 4],
     }
 }

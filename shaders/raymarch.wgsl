@@ -16,8 +16,8 @@ struct RayUniforms {
     cam_up: vec4<f32>,      // xyz, max ray distance
     cam_forward: vec4<f32>, // xyz, step factor
     // Formula parameters (params_a | params_b):
-    //   Mandelbulb:      (power, -, -, -)              | -
-    //   Mandelbox:       (scale, min_radius, fixed_radius, -) | -
+    //   Mandelbulb:      (power, -, -, -)              | (julia seed.xyz, julia on = 1)
+    //   Mandelbox:       (scale, min_radius, fixed_radius, -) | (julia seed.xyz, julia on = 1)
     //   KIFS:            (scale, offset.xyz)           | (rot_x, rot_z radians, -, -)
     //   Pseudo-Kleinian: (box_size.xyz, size)          | (thickness, -, -, -)
     //   Quaternion Julia: (c.xyzw)                     | (slice w, -, -, -)
@@ -45,7 +45,7 @@ var<private> kifs_rot1: vec3<f32>;
 var<private> kifs_rot2: vec3<f32>;
 
 // Returns (distance estimate, orbit trap = min |z|^2).
-fn de_mandelbulb(p: vec3<f32>, power: f32, max_iterations: u32) -> vec2<f32> {
+fn de_mandelbulb(p: vec3<f32>, power: f32, c: vec3<f32>, dc: f32, max_iterations: u32) -> vec2<f32> {
     var z = p;
     var dr = 1.0;
     var r = length(z);
@@ -57,15 +57,15 @@ fn de_mandelbulb(p: vec3<f32>, power: f32, max_iterations: u32) -> vec2<f32> {
         }
         let theta = acos(clamp(z.z / r, -1.0, 1.0)) * power;
         let phi = atan2(z.y, z.x) * power;
-        dr = pow(r, power - 1.0) * power * dr + 1.0;
+        dr = pow(r, power - 1.0) * power * dr + dc;
         let zr = pow(r, power);
-        z = zr * vec3<f32>(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) + p;
+        z = zr * vec3<f32>(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta)) + c;
         trap = min(trap, dot(z, z));
     }
     return vec2<f32>(0.5 * log(max(r, 1e-12)) * r / dr, trap);
 }
 
-fn de_mandelbox(p: vec3<f32>, scale: f32, min_radius: f32, fixed_radius: f32, max_iterations: u32) -> vec2<f32> {
+fn de_mandelbox(p: vec3<f32>, scale: f32, min_radius: f32, fixed_radius: f32, c: vec3<f32>, dc: f32, max_iterations: u32) -> vec2<f32> {
     let min_r2 = min_radius * min_radius;
     let fixed_r2 = fixed_radius * fixed_radius;
     var z = p;
@@ -82,8 +82,8 @@ fn de_mandelbox(p: vec3<f32>, scale: f32, min_radius: f32, fixed_radius: f32, ma
         } else if (r2 < fixed_r2) {
             k = fixed_r2 / r2;
         }
-        dr = dr * k * abs(scale) + 1.0;
-        z = z * (k * scale) + p;
+        dr = dr * k * abs(scale) + dc;
+        z = z * (k * scale) + c;
         trap = min(trap, r2);
         if (dot(z, z) > 1e8) {
             break;
@@ -162,12 +162,27 @@ fn de_quaternion_julia(p: vec3<f32>, c: vec4<f32>, slice: f32, max_iterations: u
     return vec2<f32>(0.5 * r * log(r) / max(dr, 1e-30), trap);
 }
 
+// Mandelbulb/Mandelbox `c`: the point itself, or the fixed Julia seed when
+// Julia mode is on (mirrors fractal3d::julia_addend). Its derivative with
+// respect to the point is 1 or 0 — the `+ dc` of the DE recurrence.
+fn julia_on() -> bool {
+    return u.params_b.w > 0.5;
+}
+
+fn julia_c(p: vec3<f32>) -> vec3<f32> {
+    return select(p, u.params_b.xyz, julia_on());
+}
+
+fn julia_dc() -> f32 {
+    return select(1.0, 0.0, julia_on());
+}
+
 fn formula_estimate(p: vec3<f32>) -> vec2<f32> {
     let a = u.params_a;
     let iterations = u.counts.y;
     switch u.counts.x {
-        case 0u: { return de_mandelbulb(p, a.x, iterations); }
-        case 1u: { return de_mandelbox(p, a.x, a.y, a.z, iterations); }
+        case 0u: { return de_mandelbulb(p, a.x, julia_c(p), julia_dc(), iterations); }
+        case 1u: { return de_mandelbox(p, a.x, a.y, a.z, julia_c(p), julia_dc(), iterations); }
         case 2u: { return de_kifs(p, a.x, a.yzw, iterations); }
         case 3u: { return de_pseudo_kleinian(p, a.xyz, a.w, u.params_b.x, iterations); }
         default: { return de_quaternion_julia(p, a, u.params_b.x, iterations); }

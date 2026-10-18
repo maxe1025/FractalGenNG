@@ -4,6 +4,18 @@ All notable changes to FractalGen are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Julia mode for the Mandelbulb and Mandelbox**: a fixed seed `c`
+  replaces the point being rendered, giving each formula's Julia sets
+  ("Juliabulbs") — with the matching distance estimate (no `+ 1` in the
+  derivative). The seed is a keyframable parameter, so a flight can morph
+  through Julia sets. The Mandelbox's Julia sets fill most of their
+  cube, so they read as a patterned block; the start camera steps back
+  to show it.
+
 ## [0.5.0] - 2026-10-18
 
 ### Added

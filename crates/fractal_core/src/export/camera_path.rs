@@ -91,10 +91,12 @@ impl CameraPath {
     }
 
     /// Whether the keys animate the formula: all of them carry the base's
-    /// formula (same kind, any parameters).
+    /// formula kind with the same parameter layout (e.g. all in Julia mode
+    /// or none), any values.
     pub fn animates_formula(&self) -> bool {
-        !self.keyframes.is_empty()
-            && self.keyframes.iter().all(|k| k.formula.is_some_and(|f| f.shader_id() == self.base.formula.shader_id()))
+        let base = self.base.formula;
+        let same_layout = |f: Formula3D| f.shader_id() == base.shader_id() && f.parameters().len() == base.parameters().len();
+        !self.keyframes.is_empty() && self.keyframes.iter().all(|k| k.formula.is_some_and(same_layout))
     }
 
     /// The formula at an arbitrary frame: each parameter follows a monotone
@@ -426,6 +428,30 @@ mod tests {
             assert!(!path.animates_formula());
             assert_eq!(path.formula_at_frame(5), base.formula);
         }
+    }
+
+    #[test]
+    fn julia_seeds_animate_but_mixed_julia_modes_do_not() {
+        use crate::fractal3d::MANDELBULB_DEFAULT;
+        let c = cam([0.0, 0.0, -3.0], 0.0);
+        let bulb = |seed: Option<[f64; 3]>| MANDELBULB_DEFAULT.with_julia(seed);
+        let keyed = |frame, formula| CameraKeyframe { frame, camera: c, formula: Some(formula), easing: Easing::Linear };
+
+        let mut base = Params3D::new(MANDELBULB_DEFAULT);
+        base.formula = bulb(Some([0.0; 3]));
+        let path = CameraPath {
+            base: base.clone(),
+            keyframes: vec![keyed(0, bulb(Some([0.0, 0.0, 0.0]))), keyed(10, bulb(Some([0.4, 0.0, -0.2])))],
+        };
+        assert!(path.animates_formula());
+        let mid = path.formula_at_frame(5).julia_seed().unwrap();
+        assert!((mid[0] - 0.2).abs() < 1e-12 && (mid[2] + 0.1).abs() < 1e-12, "{mid:?}");
+
+        // One key without Julia mode: different parameter layout, so the
+        // formula stays fixed rather than mixing up parameters.
+        let mixed = CameraPath { base, keyframes: vec![keyed(0, bulb(Some([0.0; 3]))), keyed(10, bulb(None))] };
+        assert!(!mixed.animates_formula());
+        assert_eq!(mixed.formula_at_frame(5), mixed.base.formula);
     }
 
     #[test]
