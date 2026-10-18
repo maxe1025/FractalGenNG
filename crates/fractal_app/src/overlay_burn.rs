@@ -126,6 +126,7 @@ mod tests {
     use fractal_core::kinds::FractalKind;
     use fractal_core::fractal3d::{
         Formula3D, Inversion, Params3D, KIFS_DEFAULT, MANDELBOX_DEFAULT, MANDELBULB_DEFAULT, PSEUDO_KLEINIAN_DEFAULT,
+        QUATERNION_JULIA_DEFAULT,
     };
     use fractal_core::math_overlay::{describe, describe_3d, MathDetail, OverlayCorner};
     use fractal_core::FractalParams;
@@ -150,8 +151,14 @@ mod tests {
                 }
             }
         }
-        let formulas =
-            [MANDELBULB_DEFAULT, Formula3D::Mandelbulb { power: 7.5 }, MANDELBOX_DEFAULT, KIFS_DEFAULT, PSEUDO_KLEINIAN_DEFAULT];
+        let formulas = [
+            MANDELBULB_DEFAULT,
+            Formula3D::Mandelbulb { power: 7.5 },
+            MANDELBOX_DEFAULT,
+            KIFS_DEFAULT,
+            PSEUDO_KLEINIAN_DEFAULT,
+            QUATERNION_JULIA_DEFAULT,
+        ];
         for formula in formulas {
             let mut params = Params3D::new(formula);
             params.camera.position = [-1.234567, 0.000001, 3.0];

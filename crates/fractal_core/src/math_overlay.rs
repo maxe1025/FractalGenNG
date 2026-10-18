@@ -224,6 +224,15 @@ pub fn describe_3d(params: &Params3D, detail: MathDetail) -> Vec<String> {
                 ));
             }
         }
+        Formula3D::QuaternionJulia { c, slice } => {
+            lines.push("z → z² + c   (quaternions: real + i + j + k)".to_string());
+            lines.push(if detail == MathDetail::Formula {
+                "z₀ = (point on the ray, w),   c = seed".to_string()
+            } else {
+                format!("z₀ = (point on the ray, {}),   c = {}", format_scalar(slice), format_quaternion(c))
+            });
+            lines.push("DE = 0.5·|z|·ln|z| / |dz|,   |dz| → 2·|z|·|dz|".to_string());
+        }
     }
 
     if let Some(inversion) = params.inversion {
@@ -261,7 +270,7 @@ pub fn describe_3d(params: &Params3D, detail: MathDetail) -> Vec<String> {
 
     if detail == MathDetail::Full {
         lines.push(format!(
-            "color = palette(log₂(1 + min|z|²) · {} / 4)",
+            "color = palette(mirror(log₂(1 + min|z|²) · {} / 4))   (0 → 1 → 0)",
             format_scalar(f64::from(params.palette.cycle_count))
         ));
         lines.push("light = headlight + key light,  × ambient occlusion".to_string());
@@ -280,6 +289,16 @@ fn power_of(base: &str, exponent: f64) -> String {
     } else {
         format!("{base}^{}", format_scalar(exponent))
     }
+}
+
+/// `a + bi + cj + dk` with typographic minus signs.
+fn format_quaternion(q: [f64; 4]) -> String {
+    let mut s = trim_fixed(q[0], 4).replace('-', "−");
+    for (value, unit) in q[1..].iter().zip(["i", "j", "k"]) {
+        let digits = trim_fixed(value.abs(), 4);
+        s.push_str(&format!(" {} {digits}{unit}", if *value < 0.0 { '−' } else { '+' }));
+    }
+    s
 }
 
 fn format_vec3(v: [f64; 3]) -> String {
@@ -466,6 +485,14 @@ mod tests {
         let values = describe_3d(&params, MathDetail::Full);
         assert!(values[0].ends_with("s = −1.5"));
         assert!(values.iter().any(|l| l.starts_with("fog = ")));
+    }
+
+    #[test]
+    fn quaternion_julia_lines_state_the_seed() {
+        let params = Params3D::new(crate::fractal3d::QUATERNION_JULIA_DEFAULT);
+        let lines = describe_3d(&params, MathDetail::Values);
+        assert_eq!(lines[0], "z → z² + c   (quaternions: real + i + j + k)");
+        assert_eq!(lines[1], "z₀ = (point on the ray, 0),   c = −0.291 − 0.399i + 0.339j + 0.437k");
     }
 
     #[test]

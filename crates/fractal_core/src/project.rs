@@ -131,6 +131,7 @@ mod tests {
         let key_3d = crate::export::camera_path::CameraKeyframe {
             frame: 30,
             camera: volume.camera,
+            formula: Some(volume.formula),
             easing: Easing::Accelerating { exponent: 0.6 },
         };
         Project {

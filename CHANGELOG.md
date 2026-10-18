@@ -4,6 +4,27 @@ All notable changes to FractalGen are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Quaternion Julia** as a 3D formula: `z → z² + c` with quaternions,
+  sliced into 3D at a chosen fourth coordinate — smooth, organic bodies
+  that flow into one another as the seed `c` changes. Works with the
+  inside-out sphere inversion, the fly camera and the math overlay.
+- **Animated formula parameters in 3D**: keyframes (I) now also store the
+  formula's parameters, and the timeline interpolates them smoothly
+  (never overshooting a keyed value) — e.g. morph a quaternion Julia's
+  seed, a Mandelbulb's power, a Mandelbox's scale or a KIFS rotation over
+  a flight. Older keyframes without stored parameters keep the formula
+  fixed.
+
+### Changed
+
+- 3D surfaces look up the palette mirrored (0 → 1 → 0) instead of
+  wrapping, which removes the hard, aliased color seams that showed on
+  smooth surfaces.
+
 ## [0.4.0] - 2026-10-16
 
 ### Added

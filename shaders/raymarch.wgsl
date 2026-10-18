@@ -1,5 +1,6 @@
 // Ray-marched 3D fractals (Mandelbulb, Mandelbox, Menger/KIFS,
-// pseudo-Kleinian; optionally sphere-inverted) via distance estimation.
+// pseudo-Kleinian, quaternion Julia; optionally sphere-inverted) via
+// distance estimation.
 // One compute invocation per output pixel: march the pixel's ray by the
 // distance estimate (DE) until it is within one pixel footprint of the
 // surface, then shade the hit with a headlight, a key light and ambient
@@ -19,6 +20,7 @@ struct RayUniforms {
     //   Mandelbox:       (scale, min_radius, fixed_radius, -) | -
     //   KIFS:            (scale, offset.xyz)           | (rot_x, rot_z radians, -, -)
     //   Pseudo-Kleinian: (box_size.xyz, size)          | (thickness, -, -, -)
+    //   Quaternion Julia: (c.xyzw)                     | (slice w, -, -, -)
     params_a: vec4<f32>,
     params_b: vec4<f32>,
     inversion: vec4<f32>,   // center.xyz, radius (0 = no inversion)
@@ -26,7 +28,7 @@ struct RayUniforms {
     // inversion free radius (see Inversion::free_radius), unused
     misc: vec4<f32>,
     background: vec4<f32>,
-    // formula_id (0=Mandelbulb,1=Mandelbox,2=KIFS,3=Pseudo-Kleinian),
+    // formula_id (0=Mandelbulb,1=Mandelbox,2=KIFS,3=Pseudo-Kleinian,4=Quaternion Julia),
     // max_iterations, max_steps, stop_count
     counts: vec4<u32>,
 };
@@ -139,6 +141,27 @@ fn de_pseudo_kleinian(p: vec3<f32>, box_size: vec3<f32>, size: f32, thickness: f
     return vec2<f32>(de / stretch, trap);
 }
 
+fn de_quaternion_julia(p: vec3<f32>, c: vec4<f32>, slice: f32, max_iterations: u32) -> vec2<f32> {
+    // z = (real, i, j, k)
+    var z = vec4<f32>(p, slice);
+    var dr = 1.0;
+    var r2 = dot(z, z);
+    var trap = 1e20;
+    for (var i = 0u; i < max_iterations; i = i + 1u) {
+        // |d(z²)| = 2|z|·|dz| for quaternions, as for complex numbers.
+        dr = dr * 2.0 * sqrt(r2);
+        // (a + v)² = a² − |v|² + 2a·v
+        z = vec4<f32>(z.x * z.x - dot(z.yzw, z.yzw), 2.0 * z.x * z.yzw) + c;
+        r2 = dot(z, z);
+        trap = min(trap, r2);
+        if (r2 > 256.0) {
+            break;
+        }
+    }
+    let r = max(sqrt(r2), 1e-30);
+    return vec2<f32>(0.5 * r * log(r) / max(dr, 1e-30), trap);
+}
+
 fn formula_estimate(p: vec3<f32>) -> vec2<f32> {
     let a = u.params_a;
     let iterations = u.counts.y;
@@ -146,7 +169,8 @@ fn formula_estimate(p: vec3<f32>) -> vec2<f32> {
         case 0u: { return de_mandelbulb(p, a.x, iterations); }
         case 1u: { return de_mandelbox(p, a.x, a.y, a.z, iterations); }
         case 2u: { return de_kifs(p, a.x, a.yzw, iterations); }
-        default: { return de_pseudo_kleinian(p, a.xyz, a.w, u.params_b.x, iterations); }
+        case 3u: { return de_pseudo_kleinian(p, a.xyz, a.w, u.params_b.x, iterations); }
+        default: { return de_quaternion_julia(p, a, u.params_b.x, iterations); }
     }
 }
 
@@ -252,7 +276,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (hit) {
         let p = ro + dir * t;
         let n = normal_at(p, max(eps * 2.0, 1e-6));
-        let base = sample_palette(log2(1.0 + trap) * u.misc.y * 0.25, u.counts.w).rgb;
+        // Mirrored lookup (0 → 1 → 0 ...): a plain wrap would jump from the
+        // palette's last color straight back to its first, drawing hard,
+        // aliased seams across smooth surfaces.
+        let color_t = log2(1.0 + trap) * u.misc.y * 0.25;
+        let mirrored = 1.0 - abs(1.0 - 2.0 * fract(color_t * 0.5));
+        let base = sample_palette(min(mirrored, 0.9999), u.counts.w).rgb;
         let headlight = max(dot(n, -dir), 0.0);
         let key = max(dot(n, normalize(KEY_LIGHT_DIR)), 0.0);
         let ao = ambient_occlusion(p, n, max(t * 0.015, eps * 2.0));

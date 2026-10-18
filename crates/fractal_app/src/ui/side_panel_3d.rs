@@ -1,13 +1,15 @@
 use eframe::egui;
 use fractal_core::fractal3d::{
     Formula3D, Inversion, Params3D, KIFS_DEFAULT, MANDELBOX_DEFAULT, MANDELBULB_DEFAULT, PSEUDO_KLEINIAN_DEFAULT,
+    QUATERNION_JULIA_DEFAULT,
 };
 
 use crate::app::FractalApp;
 use crate::ui::theme;
 use crate::ui::viewport3d::FLY_SPEED_RANGE;
 
-const FORMULA_CHOICES: [Formula3D; 4] = [MANDELBOX_DEFAULT, MANDELBULB_DEFAULT, KIFS_DEFAULT, PSEUDO_KLEINIAN_DEFAULT];
+const FORMULA_CHOICES: [Formula3D; 5] =
+    [MANDELBOX_DEFAULT, MANDELBULB_DEFAULT, KIFS_DEFAULT, PSEUDO_KLEINIAN_DEFAULT, QUATERNION_JULIA_DEFAULT];
 
 /// Centered on the origin, which lies inside the Mandelbulb's and the
 /// Mandelbox's solid — so the inverted space is a closed cave.
@@ -85,7 +87,27 @@ pub fn show(ui: &mut egui::Ui, app: &mut FractalApp) {
                     ui.add(egui::DragValue::new(thickness).range(0.0..=0.5).speed(0.0005));
                 });
             }
+            Formula3D::QuaternionJulia { c, slice } => {
+                ui.horizontal(|ui| {
+                    ui.label("c:");
+                    for (value, part) in c.iter_mut().zip(["", "i ", "j ", "k "]) {
+                        ui.add(egui::DragValue::new(value).range(-2.0..=2.0).speed(0.001).prefix(part));
+                    }
+                })
+                .response
+                .on_hover_text("The Julia seed, a quaternion (real, i, j, k). Small changes reshape the whole body.");
+                ui.horizontal(|ui| {
+                    ui.label("4D slice w:");
+                    ui.add(egui::DragValue::new(slice).range(-1.5..=1.5).speed(0.002))
+                        .on_hover_text("Where the 3D view cuts through the 4D set (the k-component of z₀).");
+                });
+            }
         }
+        ui.label(
+            egui::RichText::new("Keyframes (I) also store these parameters, so they can be animated.")
+                .color(theme::TEXT_WEAK)
+                .small(),
+        );
     });
 
     theme::section(ui, "Inside-Out", |ui| {

@@ -152,6 +152,7 @@ impl RayUniforms {
             Formula3D::PseudoKleinian { box_size, size, thickness } => {
                 ([box_size[0], box_size[1], box_size[2], size], [thickness, 0.0, 0.0, 0.0])
             }
+            Formula3D::QuaternionJulia { c, slice } => (c, [slice, 0.0, 0.0, 0.0]),
         };
         let (inversion, free_radius) = match params.inversion {
             Some(inv) => (vec(inv.center, inv.radius), inv.free_radius(params.formula)),

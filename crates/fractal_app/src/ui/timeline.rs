@@ -162,7 +162,9 @@ fn apply_current_frame(app: &mut FractalApp) {
     let frame = app.timeline.current_frame;
     if app.is_3d() {
         if !app.timeline.keys_3d.is_empty() {
-            app.params3d.camera = app.camera_path().camera_at_frame(frame);
+            let path = app.camera_path();
+            app.params3d.camera = path.camera_at_frame(frame);
+            app.params3d.formula = path.formula_at_frame(frame);
             app.view.last_camera_motion = Some(Instant::now());
         }
     } else if !app.timeline.keys_2d.is_empty() {
@@ -177,7 +179,8 @@ pub fn insert_key(app: &mut FractalApp) {
     if app.is_3d() {
         let keys = &mut app.timeline.keys_3d;
         let easing = keyframes::index_at_frame(keys, frame).map_or(Easing::Linear, |i| keys[i].easing);
-        let index = keyframes::insert_or_replace(keys, CameraKeyframe { frame, camera: app.params3d.camera, easing });
+        let key = CameraKeyframe { frame, camera: app.params3d.camera, formula: Some(app.params3d.formula), easing };
+        let index = keyframes::insert_or_replace(keys, key);
         app.timeline.selected_3d = Some(index);
     } else {
         let keys = &mut app.timeline.keys_2d;

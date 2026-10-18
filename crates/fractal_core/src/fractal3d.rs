@@ -41,9 +41,15 @@ pub enum Formula3D {
     /// only ever shrinks, tiling all of space with organic tunnels — the
     /// camera is always inside it.
     PseudoKleinian { box_size: [f64; 3], size: f64, thickness: f64 },
+    /// The quaternion Julia set: `z → z² + c` with `z` and `c` quaternions,
+    /// sliced into 3D at `z₀ = (x, y, z, slice)`. Smooth, organic bodies
+    /// that flow into each other as `c` changes.
+    QuaternionJulia { c: [f64; 4], slice: f64 },
 }
 
 pub const MANDELBULB_DEFAULT: Formula3D = Formula3D::Mandelbulb { power: 8.0 };
+pub const QUATERNION_JULIA_DEFAULT: Formula3D =
+    Formula3D::QuaternionJulia { c: [-0.291, -0.399, 0.339, 0.437], slice: 0.0 };
 pub const MANDELBOX_DEFAULT: Formula3D = Formula3D::Mandelbox { scale: -1.5, min_radius: 0.5, fixed_radius: 1.0 };
 pub const KIFS_DEFAULT: Formula3D =
     Formula3D::Kifs { scale: 3.0, offset: [1.0, 1.0, 1.0], rotation_degrees: [0.0, 0.0] };
@@ -57,6 +63,42 @@ impl Formula3D {
             Formula3D::Mandelbox { .. } => 1,
             Formula3D::Kifs { .. } => 2,
             Formula3D::PseudoKleinian { .. } => 3,
+            Formula3D::QuaternionJulia { .. } => 4,
+        }
+    }
+
+    /// The formula's numeric parameters, flattened — for interpolating
+    /// between keyframes. [`Self::with_parameters`] is the inverse.
+    pub fn parameters(self) -> Vec<f64> {
+        match self {
+            Formula3D::Mandelbulb { power } => vec![power],
+            Formula3D::Mandelbox { scale, min_radius, fixed_radius } => vec![scale, min_radius, fixed_radius],
+            Formula3D::Kifs { scale, offset, rotation_degrees } => {
+                vec![scale, offset[0], offset[1], offset[2], rotation_degrees[0], rotation_degrees[1]]
+            }
+            Formula3D::PseudoKleinian { box_size, size, thickness } => {
+                vec![box_size[0], box_size[1], box_size[2], size, thickness]
+            }
+            Formula3D::QuaternionJulia { c, slice } => vec![c[0], c[1], c[2], c[3], slice],
+        }
+    }
+
+    /// This formula with its parameters replaced by `v` (as laid out by
+    /// [`Self::parameters`]); a too-short `v` leaves the formula unchanged.
+    pub fn with_parameters(self, v: &[f64]) -> Self {
+        if v.len() < self.parameters().len() {
+            return self;
+        }
+        match self {
+            Formula3D::Mandelbulb { .. } => Formula3D::Mandelbulb { power: v[0] },
+            Formula3D::Mandelbox { .. } => Formula3D::Mandelbox { scale: v[0], min_radius: v[1], fixed_radius: v[2] },
+            Formula3D::Kifs { .. } => {
+                Formula3D::Kifs { scale: v[0], offset: [v[1], v[2], v[3]], rotation_degrees: [v[4], v[5]] }
+            }
+            Formula3D::PseudoKleinian { .. } => {
+                Formula3D::PseudoKleinian { box_size: [v[0], v[1], v[2]], size: v[3], thickness: v[4] }
+            }
+            Formula3D::QuaternionJulia { .. } => Formula3D::QuaternionJulia { c: [v[0], v[1], v[2], v[3]], slice: v[4] },
         }
     }
 
@@ -66,6 +108,7 @@ impl Formula3D {
             Formula3D::Mandelbox { .. } => "Mandelbox",
             Formula3D::Kifs { .. } => "Menger / KIFS",
             Formula3D::PseudoKleinian { .. } => "Pseudo-Kleinian",
+            Formula3D::QuaternionJulia { .. } => "Quaternion Julia",
         }
     }
 
@@ -88,6 +131,12 @@ impl Formula3D {
             // doubled for the slack rotation adds.
             Formula3D::Kifs { offset, .. } => 2.0 * length(offset).max(1.0),
             Formula3D::PseudoKleinian { .. } => UNBOUNDED_RADIUS,
+            // Every orbit starting beyond R = (1 + √(1 + 4|c|))/2 escapes
+            // (|z|² − |c| > |z| there), so the set lies within it.
+            Formula3D::QuaternionJulia { c, .. } => {
+                let c_len = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2] + c[3] * c[3]).sqrt();
+                (1.0 + (1.0 + 4.0 * c_len).sqrt()) / 2.0 + 0.1
+            }
         }
     }
 
@@ -105,6 +154,7 @@ impl Formula3D {
             Formula3D::Mandelbox { .. } => [0.0, 0.0, -4.4],
             Formula3D::Kifs { offset, .. } => [0.0, 0.0, -3.5 * offset[2].abs().max(0.5)],
             Formula3D::PseudoKleinian { .. } => PSEUDO_KLEINIAN_START,
+            Formula3D::QuaternionJulia { .. } => [0.0, 0.0, -3.0],
         };
         Camera3D { position, yaw: 0.0, pitch: 0.0, roll: 0.0, fov_y_degrees: 60.0 }
     }
@@ -123,6 +173,7 @@ impl Formula3D {
             Formula3D::PseudoKleinian { box_size, size, thickness } => {
                 pseudo_kleinian_de(p, box_size, size, thickness, max_iterations)
             }
+            Formula3D::QuaternionJulia { c, slice } => quaternion_julia_de(p, c, slice, max_iterations),
         }
     }
 
@@ -279,6 +330,32 @@ fn unit_box_distance(p: [f64; 3]) -> f64 {
     length(q.map(|c| c.max(0.0))) + q[0].max(q[1]).max(q[2]).min(0.0)
 }
 
+/// Escape radius² of the quaternion Julia iteration — larger than the
+/// minimal 4 so the DE formula, which assumes |z| ≫ 1, is accurate.
+const QUATERNION_BAILOUT_SQ: f64 = 256.0;
+
+fn quaternion_julia_de(p: [f64; 3], c: [f64; 4], slice: f64, max_iterations: u32) -> (f64, f64) {
+    // z = (real, i, j, k)
+    let mut z = [p[0], p[1], p[2], slice];
+    let mut dr = 1.0;
+    let mut r2 = z.iter().map(|v| v * v).sum::<f64>();
+    let mut trap = f64::MAX;
+    for _ in 0..max_iterations {
+        // |d(z²)| = 2|z|·|dz| for quaternions, as for complex numbers.
+        dr *= 2.0 * r2.sqrt();
+        // (a + v)² = a² − |v|² + 2a·v
+        let imag2 = z[1] * z[1] + z[2] * z[2] + z[3] * z[3];
+        z = [z[0] * z[0] - imag2 + c[0], 2.0 * z[0] * z[1] + c[1], 2.0 * z[0] * z[2] + c[2], 2.0 * z[0] * z[3] + c[3]];
+        r2 = z.iter().map(|v| v * v).sum::<f64>();
+        trap = trap.min(r2);
+        if r2 > QUATERNION_BAILOUT_SQ {
+            break;
+        }
+    }
+    let r = r2.sqrt().max(1e-30);
+    (0.5 * r * r.ln() / dr.max(1e-30), trap)
+}
+
 fn pseudo_kleinian_de(p: [f64; 3], box_size: [f64; 3], size: f64, thickness: f64, max_iterations: u32) -> (f64, f64) {
     let mut z = p;
     let mut stretch = 1.0;
@@ -419,7 +496,7 @@ impl Params3D {
             detail: 1.0,
             step_factor: match formula {
                 Formula3D::Mandelbulb { .. } | Formula3D::PseudoKleinian { .. } => 0.8,
-                Formula3D::Mandelbox { .. } | Formula3D::Kifs { .. } => 0.9,
+                Formula3D::Mandelbox { .. } | Formula3D::Kifs { .. } | Formula3D::QuaternionJulia { .. } => 0.9,
             },
             fog_distance: 100.0,
             palette: Palette::ocean(),
@@ -578,7 +655,8 @@ mod tests {
         assert_eq!(cam.pitch, MAX_PITCH);
     }
 
-    const ALL_DEFAULTS: [Formula3D; 4] = [MANDELBULB_DEFAULT, MANDELBOX_DEFAULT, KIFS_DEFAULT, PSEUDO_KLEINIAN_DEFAULT];
+    const ALL_DEFAULTS: [Formula3D; 5] =
+        [MANDELBULB_DEFAULT, MANDELBOX_DEFAULT, KIFS_DEFAULT, PSEUDO_KLEINIAN_DEFAULT, QUATERNION_JULIA_DEFAULT];
 
     #[test]
     fn default_cameras_start_in_free_space_with_room_to_move() {
@@ -632,6 +710,44 @@ mod tests {
         let far = KIFS_DEFAULT.distance_estimate([5.0, 0.0, 0.0], 8);
         let true_distance = (16.0f64 + 2.0 / 9.0).sqrt();
         assert!(far > 3.9 && far <= true_distance, "{far} vs {true_distance}");
+    }
+
+    #[test]
+    fn quaternion_julia_with_zero_c_is_the_unit_sphere() {
+        // z → z² keeps |z| < 1 inside the unit ball and escapes outside:
+        // the slice is exactly the unit sphere, so the DE has a known answer.
+        let sphere = Formula3D::QuaternionJulia { c: [0.0; 4], slice: 0.0 };
+        let de = sphere.distance_estimate([0.0, 0.0, 3.0], 12);
+        assert!(de > 1.5 && de <= 2.0 + 1e-9, "{de}");
+        let near = sphere.distance_estimate([0.0, 1.05, 0.0], 12);
+        assert!(near > 0.0 && near <= 0.05 + 1e-9, "{near}");
+        assert!(sphere.distance_estimate([0.3, -0.2, 0.1], 12) < 0.0, "inside the ball");
+        // A 4D slice off-center cuts a smaller sphere: at w = 0.8 its
+        // radius is 0.6, so (0, 0, 0.7) is outside.
+        let sliced = Formula3D::QuaternionJulia { c: [0.0; 4], slice: 0.8 };
+        assert!(sliced.distance_estimate([0.0, 0.0, 0.7], 12) > 0.0);
+        assert!(sliced.distance_estimate([0.0, 0.0, 0.5], 12) < 0.0);
+    }
+
+    #[test]
+    fn quaternion_julia_lies_within_its_bounding_radius() {
+        let r = QUATERNION_JULIA_DEFAULT.bounding_radius();
+        for dir in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [-0.6, 0.0, 0.8]] {
+            let p = dir.map(|d| d * r);
+            assert!(QUATERNION_JULIA_DEFAULT.distance_estimate(p, 12) > 0.0, "{p:?} should be outside");
+        }
+    }
+
+    #[test]
+    fn formula_parameters_round_trip_for_every_formula() {
+        for formula in ALL_DEFAULTS {
+            let values = formula.parameters();
+            let shifted: Vec<f64> = values.iter().map(|v| v + 0.25).collect();
+            let changed = formula.with_parameters(&shifted);
+            assert_eq!(changed.shader_id(), formula.shader_id());
+            assert_eq!(changed.parameters(), shifted);
+            assert_eq!(formula.with_parameters(&[]), formula, "too few values leave it unchanged");
+        }
     }
 
     #[test]
